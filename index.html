@@ -1,7 +1,11 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -567,9 +571,15 @@
             <input class="fi" type="number" id="c-strike" placeholder="150.00" step="0.01" oninput="calcUpdate()">
           </div>
         </div>
-        <div class="fg">
-          <label class="fl">Days to Expiration</label>
-          <input class="fi" type="number" id="c-dte" placeholder="30" oninput="calcUpdate()">
+        <div class="fr">
+          <div class="fg">
+            <label class="fl">Expiration Date</label>
+            <input class="fi" type="date" id="c-expdate" oninput="cSyncDateToDTE()" onchange="cSyncDateToDTE()">
+          </div>
+          <div class="fg">
+            <label class="fl">Days to Exp (DTE)</label>
+            <input class="fi" type="number" id="c-dte" placeholder="30" oninput="cSyncDTEToDate();calcUpdate()">
+          </div>
         </div>
         <div class="fg">
           <label class="fl">Type</label>
@@ -708,9 +718,15 @@
           <button class="tgl-btn" id="a-t-call" onclick="setAddType('call')">CALL</button>
         </div>
       </div>
-      <div class="fg">
-        <label class="fl">Days to Expiration</label>
-        <input class="fi" type="number" id="a-dte" placeholder="30" oninput="addROIUpdate()">
+      <div class="fr">
+        <div class="fg">
+          <label class="fl">Expiration Date</label>
+          <input class="fi" type="date" id="a-expdate" oninput="aSyncDateToDTE()" onchange="aSyncDateToDTE()">
+        </div>
+        <div class="fg">
+          <label class="fl">Days to Exp (DTE)</label>
+          <input class="fi" type="number" id="a-dte" placeholder="30" oninput="aSyncDTEToDate();addROIUpdate()">
+        </div>
       </div>
       <div class="roi-preview" id="a-roi-prev">
         <div>
@@ -747,9 +763,15 @@
           <input class="fi" type="number" id="r-premium" placeholder="1.20" step="0.01" oninput="rollROIUpdate()">
         </div>
       </div>
-      <div class="fg">
-        <label class="fl">New DTE</label>
-        <input class="fi" type="number" id="r-dte" placeholder="21" oninput="rollROIUpdate()">
+      <div class="fr">
+        <div class="fg">
+          <label class="fl">New Expiration Date</label>
+          <input class="fi" type="date" id="r-expdate" oninput="rSyncDateToDTE()" onchange="rSyncDateToDTE()">
+        </div>
+        <div class="fg">
+          <label class="fl">New DTE</label>
+          <input class="fi" type="number" id="r-dte" placeholder="21" oninput="rSyncDTEToDate();rollROIUpdate()">
+        </div>
       </div>
       <div class="roi-preview" id="r-roi-prev">
         <div>
@@ -921,12 +943,62 @@ const closeConfirm  = id => document.getElementById(id).classList.remove('open')
 /* ═══════════════════════════════════════
    ADD TRADE
 ═══════════════════════════════════════ */
+// ── Date ↔ DTE sync helpers ──
+function dteFromDate(dateVal) {
+  if (!dateVal) return '';
+  const exp = new Date(dateVal + 'T00:00:00');
+  const today0 = new Date(); today0.setHours(0,0,0,0);
+  return Math.max(1, Math.ceil((exp - today0) / 86400000));
+}
+function dateFromDTE(dte) {
+  if (!dte || dte <= 0) return '';
+  const d = new Date(); d.setHours(0,0,0,0);
+  d.setDate(d.getDate() + parseInt(dte));
+  return d.toISOString().split('T')[0];
+}
+
+// Add modal sync
+function aSyncDateToDTE() {
+  const v = dteFromDate(document.getElementById('a-expdate').value);
+  if (v) document.getElementById('a-dte').value = v;
+  addROIUpdate();
+}
+function aSyncDTEToDate() {
+  const v = dateFromDTE(document.getElementById('a-dte').value);
+  if (v) document.getElementById('a-expdate').value = v;
+}
+
+// Roll modal sync
+function rSyncDateToDTE() {
+  const v = dteFromDate(document.getElementById('r-expdate').value);
+  if (v) document.getElementById('r-dte').value = v;
+  rollROIUpdate();
+}
+function rSyncDTEToDate() {
+  const v = dateFromDTE(document.getElementById('r-dte').value);
+  if (v) document.getElementById('r-expdate').value = v;
+}
+
+// Calc tab sync
+function cSyncDateToDTE() {
+  const v = dteFromDate(document.getElementById('c-expdate').value);
+  if (v) document.getElementById('c-dte').value = v;
+  calcUpdate();
+}
+function cSyncDTEToDate() {
+  const v = dateFromDTE(document.getElementById('c-dte').value);
+  if (v) document.getElementById('c-expdate').value = v;
+}
+
 function openAddModal(prefill) {
   addType = prefill?.type || 'put';
   document.getElementById('a-ticker').value  = prefill?.ticker  || '';
   document.getElementById('a-strike').value  = prefill?.strike  || '';
   document.getElementById('a-premium').value = prefill?.premium || '';
-  document.getElementById('a-dte').value     = prefill?.dte     || '';
+  // Accept prefill as DTE number or expiration date string
+  const dte = prefill?.dte || '';
+  document.getElementById('a-dte').value     = dte;
+  document.getElementById('a-expdate').value = dte ? dateFromDTE(dte) : '';
   setTypeBtn('a', addType);
   addROIUpdate();
   openOverlay('m-add');
@@ -981,6 +1053,7 @@ function openRoll(id) {
   document.getElementById('r-strike').value  = '';
   document.getElementById('r-premium').value = '';
   document.getElementById('r-dte').value     = '';
+  document.getElementById('r-expdate').value = '';
   document.getElementById('r-roi-val').textContent = '—';
   document.getElementById('r-info').innerHTML =
     `<b>${t.ticker}</b> ${t.type.toUpperCase()} &nbsp;|&nbsp; Current strike: <b>$${currentStrike(t)}</b><br>
@@ -1332,14 +1405,15 @@ function renderCalcAverages() {
 }
 
 function executeCalcTrade() {
-  const p = document.getElementById('c-premium').value;
-  const s = document.getElementById('c-strike').value;
-  const d = document.getElementById('c-dte').value;
+  const p      = document.getElementById('c-premium').value;
+  const s      = document.getElementById('c-strike').value;
+  const d      = document.getElementById('c-dte').value;
   const ticker = document.getElementById('c-ticker').value;
   if (!p || !s || !d) { alert('Enter premium, strike, and DTE first'); return; }
   switchTab('portfolio');
   setTimeout(() => openAddModal({ ticker, premium: p, strike: s, dte: d, type: calcTypeVal }), 120);
 }
+
 
 /* ═══════════════════════════════════════
    RENDER: ANALYSIS
