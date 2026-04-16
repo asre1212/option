@@ -58,6 +58,22 @@
       border-bottom:1px solid var(--border);
       box-shadow:0 1px 0 var(--border);
     }
+    .stats-bar-hdr{
+      display:flex;justify-content:space-between;align-items:center;
+      margin-bottom:10px;
+    }
+    .stats-bar-label{font-size:9px;color:var(--text3);letter-spacing:.12em;text-transform:uppercase}
+    .refresh-btn{
+      display:flex;align-items:center;gap:5px;
+      background:var(--card);border:1px solid var(--border);
+      border-radius:20px;padding:5px 11px 5px 8px;
+      color:var(--text2);font-family:inherit;font-size:9px;
+      letter-spacing:.06em;text-transform:uppercase;cursor:pointer;
+      transition:all .2s;
+    }
+    .refresh-btn:active{background:rgba(26,95,175,.08);border-color:rgba(26,95,175,.3);color:var(--blue)}
+    .refresh-btn svg{width:13px;height:13px;stroke-width:2.2;transition:transform .4s}
+    .refresh-btn.spinning svg{transform:rotate(360deg)}
     .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
     .stat-card{
       background:var(--card);border:1px solid var(--border);
@@ -458,6 +474,63 @@
       display:none;text-align:center;padding:20px;
       color:var(--text3);font-size:11px;letter-spacing:.04em;
     }
+
+    /* ── DATA BACKUP ── */
+    .backup-section{margin-top:28px}
+    .backup-hdr{
+      display:flex;align-items:center;gap:8px;
+      margin-bottom:14px;
+    }
+    .backup-hdr-title{font-size:13px;font-weight:600;color:var(--text)}
+    .backup-hdr-sub{font-size:9px;color:var(--text3);letter-spacing:.05em;margin-top:1px}
+    .backup-cards{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+    .backup-card{
+      background:var(--card);border:1px solid var(--border);
+      border-radius:14px;padding:16px 14px;
+      display:flex;flex-direction:column;gap:8px;
+      box-shadow:0 1px 3px rgba(0,0,0,.05);
+      cursor:pointer;transition:border-color .2s,box-shadow .2s;
+    }
+    .backup-card:active{box-shadow:none;opacity:.8}
+    .backup-card-icon{
+      width:36px;height:36px;border-radius:10px;
+      display:flex;align-items:center;justify-content:center;
+    }
+    .bc-export .backup-card-icon{background:rgba(26,95,175,.1)}
+    .bc-import .backup-card-icon{background:rgba(26,127,75,.1)}
+    .bc-export .backup-card-icon svg{stroke:var(--blue)}
+    .bc-import .backup-card-icon svg{stroke:var(--green)}
+    .backup-card-icon svg{width:18px;height:18px;stroke-width:2}
+    .backup-card-title{font-size:12px;font-weight:600;color:var(--text)}
+    .backup-card-sub{font-size:9px;color:var(--text3);line-height:1.5}
+    .backup-info{
+      background:rgba(160,96,16,.07);border:1px solid rgba(160,96,16,.2);
+      border-radius:10px;padding:10px 12px;
+      font-size:10px;color:var(--amber);line-height:1.6;
+    }
+    .backup-info b{color:var(--text2)}
+    /* import confirm sheet */
+    .import-preview{
+      background:var(--bg);border:1px solid var(--border);
+      border-radius:10px;padding:12px;margin-bottom:14px;
+    }
+    .import-preview-row{
+      display:flex;justify-content:space-between;
+      font-size:11px;padding:4px 0;
+      border-bottom:1px solid rgba(0,0,0,.05);
+    }
+    .import-preview-row:last-child{border-bottom:none}
+    .import-preview-lbl{color:var(--text2)}
+    .import-preview-val{font-weight:600;color:var(--text)}
+    .import-mode-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
+    .import-mode-btn{
+      padding:10px;border-radius:10px;border:1px solid var(--border);
+      background:var(--bg);color:var(--text2);font-family:inherit;
+      font-size:10px;cursor:pointer;text-align:center;transition:all .15s;
+    }
+    .import-mode-btn.selected{
+      border-color:rgba(26,95,175,.4);background:rgba(26,95,175,.07);color:var(--blue);
+    }
   </style>
 </head>
 <body>
@@ -469,6 +542,13 @@
     <!-- ══ TAB: PORTFOLIO ══ -->
     <div class="tab-pane active" id="tab-portfolio">
       <div class="stats-bar">
+        <div class="stats-bar-hdr">
+          <div class="stats-bar-label">Options Tracker</div>
+          <button class="refresh-btn" id="refresh-btn" onclick="hardRefresh()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            Update App
+          </button>
+        </div>
         <div class="stats-grid">
           <div class="stat-card">
             <div class="stat-label">Realized P&amp;L</div>
@@ -656,6 +736,38 @@
         <div class="scan-done-banner" id="scan-done-banner">
           ✓ All imports handled — tap above to scan more
         </div>
+
+        <!-- ── DATA BACKUP ── -->
+        <div class="backup-section">
+          <div class="backup-hdr">
+            <div>
+              <div class="backup-hdr-title">Data Backup</div>
+              <div class="backup-hdr-sub">transfer to a new iPhone or restore a backup</div>
+            </div>
+          </div>
+          <div class="backup-cards">
+            <div class="backup-card bc-export" onclick="exportData()">
+              <div class="backup-card-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              </div>
+              <div class="backup-card-title">Export Data</div>
+              <div class="backup-card-sub">Save all trades to a JSON file on your device</div>
+            </div>
+            <div class="backup-card bc-import" onclick="document.getElementById('json-input').click()">
+              <div class="backup-card-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              </div>
+              <div class="backup-card-title">Import Data</div>
+              <div class="backup-card-sub">Restore from a previously exported file</div>
+            </div>
+          </div>
+          <input type="file" id="json-input" accept=".json,application/json" style="display:none"
+                 onchange="previewImport(this.files[0])">
+          <div class="backup-info">
+            <b>Switching iPhones?</b> Export your data first, save the file to iCloud Drive or Notes, then open the app on your new phone and use Import to restore everything.
+          </div>
+          <div style="margin-top:10px;font-size:8px;color:var(--text3);letter-spacing:.04em;text-align:center" id="backup-last-export"></div>
+        </div>
       </div>
     </div>
 
@@ -823,6 +935,35 @@
         <div class="rp-val" id="cl-roi" style="color:var(--blue)">—</div>
       </div>
       <button class="sub-btn danger" onclick="executeClose()">Close Position</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL: IMPORT CONFIRM ═══ -->
+<div class="overlay" id="m-import">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-hdr">
+      <div class="sheet-title">Import Backup</div>
+      <button class="sheet-close" onclick="closeOverlay('m-import')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="sheet-body">
+      <div class="import-preview" id="import-preview-box"></div>
+      <div style="font-size:10px;color:var(--text2);margin-bottom:10px;font-weight:500">How to import:</div>
+      <div class="import-mode-row">
+        <button class="import-mode-btn selected" id="imp-mode-merge" onclick="setImportMode('merge')">
+          Merge<br><span style="font-size:8px;opacity:.7">add to existing trades</span>
+        </button>
+        <button class="import-mode-btn" id="imp-mode-replace" onclick="setImportMode('replace')">
+          Replace<br><span style="font-size:8px;opacity:.7">overwrite all current data</span>
+        </button>
+      </div>
+      <div class="rc-warn" id="import-replace-warn" style="display:none">
+        ⚠ Replace will permanently delete all your current trades before importing.
+      </div>
+      <button class="sub-btn" onclick="confirmImport()">Import Now</button>
     </div>
   </div>
 </div>
@@ -1489,6 +1630,122 @@ function renderAnalysis() {
    INIT
 ═══════════════════════════════════════ */
 /* ═══════════════════════════════════════
+   HARD REFRESH (pull latest from GitHub)
+═══════════════════════════════════════ */
+function hardRefresh() {
+  const btn = document.getElementById('refresh-btn');
+  btn.classList.add('spinning');
+  btn.disabled = true;
+  // Short delay so the spin animation is visible before reload
+  setTimeout(() => {
+    // location.reload(true) forces bypass of cache on all browsers
+    window.location.href = window.location.href.split('?')[0]
+      + '?v=' + Date.now();
+  }, 420);
+}
+
+/* ═══════════════════════════════════════
+   EXPORT / IMPORT
+═══════════════════════════════════════ */
+
+function exportData() {
+  const d = load();
+  const payload = {
+    version: 1,
+    exported: new Date().toISOString(),
+    exportedFrom: 'Options Tracker',
+    trades: d.trades
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const date = new Date().toISOString().split('T')[0];
+  a.href     = url;
+  a.download = `options-backup-${date}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  // Record last export time
+  localStorage.setItem('opts_last_export', new Date().toISOString());
+  updateLastExportLabel();
+}
+
+function updateLastExportLabel() {
+  const el = document.getElementById('backup-last-export');
+  if (!el) return;
+  const ts = localStorage.getItem('opts_last_export');
+  if (ts) {
+    const d = new Date(ts);
+    el.textContent = `Last export: ${d.toLocaleDateString()} at ${d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;
+  }
+}
+
+// ── Import: preview before committing ──
+let _importPayload = null;
+let _importMode    = 'merge';
+
+function previewImport(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data.trades || !Array.isArray(data.trades)) throw new Error('Invalid backup file');
+      _importPayload = data;
+
+      const active  = data.trades.filter(t => t.status === 'active').length;
+      const closed  = data.trades.filter(t => t.status !== 'active').length;
+      const rolled  = data.trades.filter(t => t.rolls && t.rolls.length > 0).length;
+      const expDate = data.exported ? new Date(data.exported).toLocaleDateString() : 'unknown';
+
+      document.getElementById('import-preview-box').innerHTML = `
+        <div class="import-preview-row"><span class="import-preview-lbl">File</span><span class="import-preview-val">${file.name}</span></div>
+        <div class="import-preview-row"><span class="import-preview-lbl">Exported on</span><span class="import-preview-val">${expDate}</span></div>
+        <div class="import-preview-row"><span class="import-preview-lbl">Total trades</span><span class="import-preview-val">${data.trades.length}</span></div>
+        <div class="import-preview-row"><span class="import-preview-lbl">Active</span><span class="import-preview-val">${active}</span></div>
+        <div class="import-preview-row"><span class="import-preview-lbl">Closed / Expired</span><span class="import-preview-val">${closed}</span></div>
+        <div class="import-preview-row"><span class="import-preview-lbl">Rolled trades</span><span class="import-preview-val">${rolled}</span></div>
+      `;
+      setImportMode('merge');
+      openOverlay('m-import');
+    } catch(err) {
+      alert('Could not read file. Make sure you selected a valid Options Tracker backup (.json).');
+    }
+  };
+  reader.readAsText(file);
+  document.getElementById('json-input').value = '';
+}
+
+function setImportMode(mode) {
+  _importMode = mode;
+  document.getElementById('imp-mode-merge').classList.toggle('selected',   mode === 'merge');
+  document.getElementById('imp-mode-replace').classList.toggle('selected', mode === 'replace');
+  document.getElementById('import-replace-warn').style.display = mode === 'replace' ? 'block' : 'none';
+}
+
+function confirmImport() {
+  if (!_importPayload) return;
+  const incoming = _importPayload.trades || [];
+  if (_importMode === 'replace') {
+    save({ trades: incoming });
+  } else {
+    // Merge: skip any trade whose id already exists
+    const current = load();
+    const existingIds = new Set(current.trades.map(t => t.id));
+    const newTrades   = incoming.filter(t => !existingIds.has(t.id));
+    current.trades    = current.trades.concat(newTrades);
+    save(current);
+  }
+  closeOverlay('m-import');
+  _importPayload = null;
+  renderActive();
+  updateStats();
+  const added = _importMode === 'replace' ? incoming.length : '?';
+  alert(`Import complete. Your trades have been restored.`);
+}
+
+/* ═══════════════════════════════════════
    SCAN / OCR FEATURE
 ═══════════════════════════════════════ */
 
@@ -1945,6 +2202,7 @@ document.querySelectorAll('.overlay, .confirm-overlay').forEach(el => {
 
 renderActive();
 updateStats();
+updateLastExportLabel();
 
 // ── Generate & inject PWA home screen icon ──
 (function(){
