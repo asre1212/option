@@ -475,6 +475,104 @@
       color:var(--text3);font-size:11px;letter-spacing:.04em;
     }
 
+    /* ── VS COMPARE MODE ── */
+    .calc-page-hdr{
+      display:flex;justify-content:space-between;align-items:flex-start;
+      margin-bottom:16px;
+    }
+    .vs-toggle{
+      display:flex;align-items:center;gap:7px;
+      background:var(--card);border:1px solid var(--border);
+      border-radius:20px;padding:6px 14px 6px 10px;
+      cursor:pointer;transition:all .2s;
+      font-family:inherit;font-size:10px;font-weight:600;
+      letter-spacing:.08em;color:var(--text2);
+    }
+    .vs-toggle:active{opacity:.7}
+    .vs-toggle.active{
+      background:rgba(26,95,175,.08);border-color:rgba(26,95,175,.3);color:var(--blue);
+    }
+    .vs-toggle-dot{
+      width:8px;height:8px;border-radius:50%;
+      background:var(--border2);transition:background .2s;
+    }
+    .vs-toggle.active .vs-toggle-dot{background:var(--blue)}
+
+    /* comparison result card (VS mode only) */
+    .vs-compare-card{
+      display:none;grid-template-columns:1fr auto 1fr;
+      align-items:stretch;gap:0;
+      background:var(--card);border:1px solid var(--border);
+      border-radius:16px;overflow:hidden;margin-bottom:16px;
+      box-shadow:0 1px 4px rgba(0,0,0,.06);
+    }
+    .vs-compare-card.show{display:grid}
+    .vs-leg-result{
+      padding:16px 12px;text-align:center;
+      display:flex;flex-direction:column;gap:4px;
+      transition:background .3s;
+    }
+    .vs-leg-result.winner{background:rgba(26,95,175,.06)}
+    .vs-leg-lbl{font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3)}
+    .vs-leg-ticker{font-size:11px;font-weight:600;color:var(--text2);min-height:16px}
+    .vs-leg-roi{font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--text3)}
+    .vs-leg-roi.has-val{color:var(--blue)}
+    .vs-leg-roi.winner-val{color:var(--blue)}
+    .vs-winner-badge{
+      font-size:7px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+      background:var(--blue);color:#fff;border-radius:10px;
+      padding:2px 7px;display:inline-block;margin-top:2px;
+    }
+    .vs-leg-sub{font-size:9px;color:var(--text3);min-height:13px}
+    .vs-divider{
+      display:flex;align-items:center;justify-content:center;
+      background:var(--border);width:1px;position:relative;
+    }
+    .vs-divider-lbl{
+      position:absolute;background:var(--card);
+      font-size:9px;font-weight:700;letter-spacing:.06em;
+      color:var(--text3);padding:4px 0;
+    }
+    .vs-diff-row{
+      display:none;background:rgba(26,95,175,.05);border:1px solid rgba(26,95,175,.15);
+      border-radius:10px;padding:9px 13px;margin-bottom:14px;
+      font-size:10px;color:var(--text2);
+      justify-content:space-between;align-items:center;
+    }
+    .vs-diff-row.show{display:flex}
+    .vs-diff-val{font-weight:600;color:var(--blue);font-size:13px}
+
+    /* leg section headers */
+    .vs-leg-header{
+      display:flex;align-items:center;gap:8px;margin-bottom:10px;margin-top:4px;
+    }
+    .vs-leg-pill{
+      font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+      background:var(--blue);color:#fff;border-radius:6px;padding:3px 9px;
+    }
+    .vs-leg-pill.b{background:var(--amber)}
+    .vs-leg-divider{flex:1;height:1px;background:var(--border)}
+
+    /* leg B section (hidden until VS active) */
+    .vs-leg-b{display:none}
+    .vs-leg-b.show{display:block}
+
+    /* execute buttons in VS mode */
+    .vs-exec-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+    .vs-exec-btn{
+      padding:13px;border:none;border-radius:11px;
+      font-family:inherit;font-size:11px;font-weight:700;
+      letter-spacing:.08em;cursor:pointer;text-transform:uppercase;
+      transition:opacity .2s;
+    }
+    .vs-exec-btn:active{opacity:.75}
+    .vs-exec-a{background:var(--blue);color:#fff}
+    .vs-exec-b{background:var(--amber);color:#000}
+    .vs-exec-single{display:block}
+    .vs-exec-single.hide{display:none}
+    .vs-exec-row-wrap{display:none}
+    .vs-exec-row-wrap.show{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+
     /* ── DATA BACKUP ── */
     .backup-section{margin-top:28px}
     .backup-hdr{
@@ -498,8 +596,27 @@
     }
     .bc-export .backup-card-icon{background:rgba(26,95,175,.1)}
     .bc-import .backup-card-icon{background:rgba(26,127,75,.1)}
+    .bc-excel .backup-card-icon{background:rgba(21,128,61,.12)}
     .bc-export .backup-card-icon svg{stroke:var(--blue)}
     .bc-import .backup-card-icon svg{stroke:var(--green)}
+    .bc-excel .backup-card-icon svg{stroke:#15803d}
+    .excel-btn{
+      width:100%;display:flex;align-items:center;gap:12px;
+      background:var(--card);border:1px solid var(--border);
+      border-radius:14px;padding:14px;margin-top:10px;
+      cursor:pointer;transition:border-color .2s,box-shadow .2s;
+      box-shadow:0 1px 3px rgba(0,0,0,.05);
+    }
+    .excel-btn:active{opacity:.75}
+    .excel-btn-icon{
+      width:38px;height:38px;border-radius:10px;flex-shrink:0;
+      background:rgba(21,128,61,.12);border:1px solid rgba(21,128,61,.2);
+      display:flex;align-items:center;justify-content:center;
+    }
+    .excel-btn-icon svg{width:20px;height:20px;stroke:#15803d;stroke-width:1.8;fill:none}
+    .excel-btn-text{text-align:left}
+    .excel-btn-title{font-size:13px;font-weight:600;color:var(--text)}
+    .excel-btn-sub{font-size:9px;color:var(--text3);margin-top:2px;line-height:1.5}
     .backup-card-icon svg{width:18px;height:18px;stroke-width:2}
     .backup-card-title{font-size:12px;font-weight:600;color:var(--text)}
     .backup-card-sub{font-size:9px;color:var(--text3);line-height:1.5}
@@ -607,17 +724,50 @@
     <!-- ══ TAB: ROI CALC ══ -->
     <div class="tab-pane" id="tab-roi">
       <div class="calc-wrap">
-        <div class="page-hdr">
-          <div class="page-title">ROI Calc</div>
-          <div class="page-sub">annualized yield calculator</div>
+
+        <!-- header + VS toggle -->
+        <div class="calc-page-hdr">
+          <div class="page-hdr" style="margin-bottom:0">
+            <div class="page-title">ROI Calc</div>
+            <div class="page-sub">annualized yield calculator</div>
+          </div>
+          <button class="vs-toggle" id="vs-toggle-btn" onclick="toggleVS()">
+            <div class="vs-toggle-dot"></div>
+            VS
+          </button>
         </div>
 
-        <div class="roi-card">
+        <!-- single-leg result card (non-VS) -->
+        <div class="roi-card" id="c-single-card">
           <div class="roi-card-lbl">Annualized ROI</div>
           <div class="roi-big" id="c-roi">—</div>
           <div class="roi-sub-txt" id="c-roi-sub">enter values to calculate</div>
         </div>
 
+        <!-- VS compare card (shown in VS mode) -->
+        <div class="vs-compare-card" id="vs-compare-card">
+          <div class="vs-leg-result" id="vs-res-a">
+            <div class="vs-leg-lbl">Leg A</div>
+            <div class="vs-leg-ticker" id="vs-ticker-a">—</div>
+            <div class="vs-leg-roi" id="vs-roi-a">—</div>
+            <div class="vs-leg-sub" id="vs-sub-a"></div>
+          </div>
+          <div class="vs-divider"><div class="vs-divider-lbl">VS</div></div>
+          <div class="vs-leg-result" id="vs-res-b">
+            <div class="vs-leg-lbl">Leg B</div>
+            <div class="vs-leg-ticker" id="vs-ticker-b">—</div>
+            <div class="vs-leg-roi" id="vs-roi-b">—</div>
+            <div class="vs-leg-sub" id="vs-sub-b"></div>
+          </div>
+        </div>
+
+        <!-- VS diff row -->
+        <div class="vs-diff-row" id="vs-diff-row">
+          <span id="vs-diff-label">Leg A leads by</span>
+          <span class="vs-diff-val" id="vs-diff-val">—</span>
+        </div>
+
+        <!-- breakdown (single mode only) -->
         <div class="roi-bd-grid" id="c-breakdown" style="display:none">
           <div class="roi-bd-item">
             <div class="roi-bd-lbl">Premium Income</div>
@@ -637,9 +787,15 @@
           </div>
         </div>
 
+        <!-- ── LEG A ── -->
+        <div class="vs-leg-header" id="leg-a-hdr" style="display:none">
+          <div class="vs-leg-pill">Leg A</div>
+          <div class="vs-leg-divider"></div>
+        </div>
+
         <div class="fg">
           <label class="fl">Ticker (optional)</label>
-          <input class="fi" type="text" id="c-ticker" placeholder="AAPL" style="text-transform:uppercase">
+          <input class="fi" type="text" id="c-ticker" placeholder="AAPL" style="text-transform:uppercase" oninput="calcUpdate()">
         </div>
         <div class="fr">
           <div class="fg">
@@ -669,9 +825,55 @@
           </div>
         </div>
 
-        <button class="sub-btn" onclick="executeCalcTrade()" style="margin-top:4px">
+        <!-- single-mode execute -->
+        <button class="sub-btn vs-exec-single" id="exec-single-btn" onclick="executeCalcTrade('a')" style="margin-top:4px">
           Trade Executed →
         </button>
+
+        <!-- ── LEG B (VS mode only) ── -->
+        <div class="vs-leg-b" id="leg-b-section">
+          <div class="vs-leg-header" style="margin-top:18px">
+            <div class="vs-leg-pill b">Leg B</div>
+            <div class="vs-leg-divider"></div>
+          </div>
+          <div class="fg">
+            <label class="fl">Ticker (optional)</label>
+            <input class="fi" type="text" id="b-ticker" placeholder="TSLA" style="text-transform:uppercase" oninput="calcUpdate()">
+          </div>
+          <div class="fr">
+            <div class="fg">
+              <label class="fl">Premium</label>
+              <input class="fi" type="number" id="b-premium" placeholder="2.00" step="0.01" oninput="calcUpdate()">
+            </div>
+            <div class="fg">
+              <label class="fl">Strike Price</label>
+              <input class="fi" type="number" id="b-strike" placeholder="200.00" step="0.01" oninput="calcUpdate()">
+            </div>
+          </div>
+          <div class="fr">
+            <div class="fg">
+              <label class="fl">Expiration Date</label>
+              <input class="fi" type="date" id="b-expdate" oninput="bSyncDateToDTE()" onchange="bSyncDateToDTE()">
+            </div>
+            <div class="fg">
+              <label class="fl">Days to Exp (DTE)</label>
+              <input class="fi" type="number" id="b-dte" placeholder="30" oninput="bSyncDTEToDate();calcUpdate()">
+            </div>
+          </div>
+          <div class="fg">
+            <label class="fl">Type</label>
+            <div class="toggle-grp">
+              <button class="tgl-btn" id="b-t-put" onclick="setBCalcType('put')">PUT</button>
+              <button class="tgl-btn t-call" id="b-t-call" onclick="setBCalcType('call')">CALL</button>
+            </div>
+          </div>
+
+          <!-- VS execute row -->
+          <div class="vs-exec-row-wrap show" style="margin-top:8px">
+            <button class="vs-exec-btn vs-exec-a" onclick="executeCalcTrade('a')">Execute Leg A</button>
+            <button class="vs-exec-btn vs-exec-b" onclick="executeCalcTrade('b')">Execute Leg B</button>
+          </div>
+        </div>
 
         <div class="divider"></div>
         <div class="section-mini">Weighted Averages (Closed Trades)</div>
@@ -763,6 +965,18 @@
           </div>
           <input type="file" id="json-input" accept=".json,application/json" style="display:none"
                  onchange="previewImport(this.files[0])">
+
+          <!-- Excel export -->
+          <button class="excel-btn" onclick="exportExcel()">
+            <div class="excel-btn-icon">
+              <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M8 13h2.5M13.5 13H16M8 17h2.5M13.5 17H16"/></svg>
+            </div>
+            <div class="excel-btn-text">
+              <div class="excel-btn-title">Export to Excel</div>
+              <div class="excel-btn-sub">Downloads .xlsx with 3 sheets — Active Trades, History &amp; Monthly Analysis</div>
+            </div>
+          </button>
+
           <div class="backup-info">
             <b>Switching iPhones?</b> Export your data first, save the file to iCloud Drive or Notes, then open the app on your new phone and use Import to restore everything.
           </div>
@@ -1518,10 +1732,96 @@ function renderHistory() {
 /* ═══════════════════════════════════════
    RENDER: ROI CALC
 ═══════════════════════════════════════ */
+let vsMode = false;
+let calcTypeB = 'call';
+
+function toggleVS() {
+  vsMode = !vsMode;
+  const btn      = document.getElementById('vs-toggle-btn');
+  const legB     = document.getElementById('leg-b-section');
+  const legAHdr  = document.getElementById('leg-a-hdr');
+  const cmpCard  = document.getElementById('vs-compare-card');
+  const singleCard = document.getElementById('c-single-card');
+  const singleBtn  = document.getElementById('exec-single-btn');
+  const bd         = document.getElementById('c-breakdown');
+
+  btn.classList.toggle('active', vsMode);
+  legB.classList.toggle('show', vsMode);
+  legAHdr.style.display   = vsMode ? 'flex' : 'none';
+  cmpCard.classList.toggle('show', vsMode);
+  singleCard.style.display  = vsMode ? 'none' : 'block';
+  singleBtn.classList.toggle('hide', vsMode);
+  if (vsMode) bd.style.display = 'none';
+  calcUpdate();
+}
+
 function calcUpdate() {
   const p = parseFloat(document.getElementById('c-premium').value);
   const s = parseFloat(document.getElementById('c-strike').value);
   const d = parseFloat(document.getElementById('c-dte').value);
+
+  if (vsMode) {
+    // Leg A
+    const roiA   = (p && s && d) ? roiPct(p, s, d) : null;
+    const tickA  = document.getElementById('c-ticker').value.toUpperCase() || 'Leg A';
+    // Leg B
+    const p2 = parseFloat(document.getElementById('b-premium').value);
+    const s2 = parseFloat(document.getElementById('b-strike').value);
+    const d2 = parseFloat(document.getElementById('b-dte').value);
+    const roiB  = (p2 && s2 && d2) ? roiPct(p2, s2, d2) : null;
+    const tickB = document.getElementById('b-ticker').value.toUpperCase() || 'Leg B';
+
+    // Update VS result card
+    const elRoiA = document.getElementById('vs-roi-a');
+    const elRoiB = document.getElementById('vs-roi-b');
+    const elResA = document.getElementById('vs-res-a');
+    const elResB = document.getElementById('vs-res-b');
+    const elSubA = document.getElementById('vs-sub-a');
+    const elSubB = document.getElementById('vs-sub-b');
+    const diffRow = document.getElementById('vs-diff-row');
+
+    document.getElementById('vs-ticker-a').textContent = tickA;
+    document.getElementById('vs-ticker-b').textContent = tickB;
+
+    elRoiA.textContent = roiA != null ? roiA.toFixed(2) + '%' : '—';
+    elRoiB.textContent = roiB != null ? roiB.toFixed(2) + '%' : '—';
+    elRoiA.className   = 'vs-leg-roi' + (roiA != null ? ' has-val' : '');
+    elRoiB.className   = 'vs-leg-roi' + (roiB != null ? ' has-val' : '');
+
+    // Clear winner state
+    elResA.classList.remove('winner');
+    elResB.classList.remove('winner');
+    elRoiA.classList.remove('winner-val');
+    elRoiB.classList.remove('winner-val');
+    elSubA.innerHTML = '';
+    elSubB.innerHTML = '';
+    diffRow.classList.remove('show');
+
+    if (roiA != null && roiB != null) {
+      const diff = Math.abs(roiA - roiB).toFixed(2);
+      if (roiA >= roiB) {
+        elResA.classList.add('winner');
+        elRoiA.classList.add('winner-val');
+        elSubA.innerHTML = '<span class="vs-winner-badge">Better ▲</span>';
+        elSubB.textContent = `$${(p2*100).toFixed(2)} income`;
+        document.getElementById('vs-diff-label').textContent = `${tickA} leads by`;
+      } else {
+        elResB.classList.add('winner');
+        elRoiB.classList.add('winner-val');
+        elSubB.innerHTML = '<span class="vs-winner-badge">Better ▲</span>';
+        elSubA.textContent = `$${(p*100).toFixed(2)} income`;
+        document.getElementById('vs-diff-label').textContent = `${tickB} leads by`;
+      }
+      document.getElementById('vs-diff-val').textContent = diff + '% annualized ROI';
+      diffRow.classList.add('show');
+    } else {
+      if (roiA != null) elSubA.textContent = `$${(p*100).toFixed(2)} income · ${d}d`;
+      if (roiB != null) elSubB.textContent = `$${(p2*100).toFixed(2)} income · ${d2}d`;
+    }
+    return;
+  }
+
+  // ── Single mode ──
   const bd = document.getElementById('c-breakdown');
   if (!p || !s || !d) {
     document.getElementById('c-roi').textContent = '—';
@@ -1545,14 +1845,35 @@ function renderCalcAverages() {
   document.getElementById('c-avg-monthly').textContent = monthly ? monthly.toFixed(1)+'%' : '—';
 }
 
-function executeCalcTrade() {
-  const p      = document.getElementById('c-premium').value;
-  const s      = document.getElementById('c-strike').value;
-  const d      = document.getElementById('c-dte').value;
-  const ticker = document.getElementById('c-ticker').value;
+function executeCalcTrade(leg) {
+  leg = leg || 'a';
+  const prefix = leg === 'b' ? 'b' : 'c';
+  const p      = document.getElementById(`${prefix}-premium`).value;
+  const s      = document.getElementById(`${prefix}-strike`).value;
+  const d      = document.getElementById(`${prefix}-dte`).value;
+  const ticker = document.getElementById(leg === 'b' ? 'b-ticker' : 'c-ticker').value;
+  const type   = leg === 'b' ? calcTypeB : calcTypeVal;
   if (!p || !s || !d) { alert('Enter premium, strike, and DTE first'); return; }
   switchTab('portfolio');
-  setTimeout(() => openAddModal({ ticker, premium: p, strike: s, dte: d, type: calcTypeVal }), 120);
+  setTimeout(() => openAddModal({ ticker, premium: p, strike: s, dte: d, type }), 120);
+}
+
+// ── Leg B type toggle ──
+function setBCalcType(t) {
+  calcTypeB = t;
+  document.getElementById('b-t-put').className  = 'tgl-btn' + (t === 'put'  ? ' t-put'  : '');
+  document.getElementById('b-t-call').className = 'tgl-btn' + (t === 'call' ? ' t-call' : '');
+}
+
+// ── Leg B date ↔ DTE sync ──
+function bSyncDateToDTE() {
+  const v = dteFromDate(document.getElementById('b-expdate').value);
+  if (v) document.getElementById('b-dte').value = v;
+  calcUpdate();
+}
+function bSyncDTEToDate() {
+  const v = dateFromDTE(document.getElementById('b-dte').value);
+  if (v) document.getElementById('b-expdate').value = v;
 }
 
 
@@ -1629,6 +1950,164 @@ function renderAnalysis() {
 /* ═══════════════════════════════════════
    INIT
 ═══════════════════════════════════════ */
+/* ═══════════════════════════════════════
+   EXCEL EXPORT  (SheetJS)
+═══════════════════════════════════════ */
+
+function loadSheetJS() {
+  return new Promise((res, rej) => {
+    if (window.XLSX) { res(); return; }
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
+  });
+}
+
+async function exportExcel() {
+  try {
+    await loadSheetJS();
+  } catch(e) {
+    alert('Could not load Excel library — check your internet connection and try again.');
+    return;
+  }
+
+  const trades = load().trades;
+  const date   = new Date().toISOString().split('T')[0];
+  const wb     = XLSX.utils.book_new();
+
+  /* ── helper: column widths ── */
+  const colW = widths => widths.map(w => ({ wch: w }));
+
+  /* ─────────────────────────────────────
+     SHEET 1 — Active Trades
+  ───────────────────────────────────── */
+  const active = trades.filter(t => t.status === 'active');
+  const activeRows = [
+    ['Ticker','Type','Strike','Premium','Total Premium','Income ($)','DTE','Ann. ROI (%)','Date Opened','Rolls','Roll Strikes']
+  ];
+  active.forEach(t => {
+    const tp  = totalPremiums(t);
+    const td  = totalDTE(t);
+    const cs  = currentStrike(t);
+    const roi = roiPct(tp, cs, td);
+    const rollStrikes = t.rolls.length
+      ? t.rolls.map(r => `$${r.strikePrice}`).join(' → ')
+      : '—';
+    activeRows.push([
+      t.ticker,
+      t.type.toUpperCase(),
+      cs,
+      t.premium,
+      +tp.toFixed(2),
+      +(tp * 100).toFixed(2),
+      td,
+      +roi.toFixed(2),
+      t.dateOpened,
+      t.rolls.length,
+      rollStrikes
+    ]);
+  });
+  const ws1 = XLSX.utils.aoa_to_sheet(activeRows);
+  ws1['!cols'] = colW([8,6,9,10,13,12,6,13,12,6,22]);
+  styleHeaderRow(ws1, activeRows[0].length);
+  XLSX.utils.book_append_sheet(wb, ws1, 'Active Trades');
+
+  /* ─────────────────────────────────────
+     SHEET 2 — Trade History
+  ───────────────────────────────────── */
+  const closed = trades
+    .filter(t => t.status !== 'active')
+    .sort((a,b) => new Date(b.closeInfo?.dateClosed||b.dateOpened) - new Date(a.closeInfo?.dateClosed||a.dateOpened));
+  const histRows = [
+    ['Ticker','Type','Strike','Total Premium','Buy Price','P&L ($)','Ann. ROI (%)','Days Open','Status','Date Opened','Date Closed','Rolls']
+  ];
+  closed.forEach(t => {
+    const tp    = totalPremiums(t);
+    const cs    = currentStrike(t);
+    const ad    = actualDays(t);
+    const pnl   = tradePnL(t);
+    const profPS = t.status === 'expired' ? tp : tp - (t.closeInfo?.buyingPrice || 0);
+    const roi   = roiPct(profPS, cs, ad);
+    histRows.push([
+      t.ticker,
+      t.type.toUpperCase(),
+      cs,
+      +tp.toFixed(2),
+      t.status === 'closed_early' ? +(t.closeInfo?.buyingPrice || 0).toFixed(2) : '—',
+      +pnl.toFixed(2),
+      +roi.toFixed(2),
+      ad,
+      t.status === 'expired' ? 'Expired' : 'Closed Early',
+      t.dateOpened,
+      t.closeInfo?.dateClosed || '—',
+      t.rolls.length
+    ]);
+  });
+  const ws2 = XLSX.utils.aoa_to_sheet(histRows);
+  ws2['!cols'] = colW([8,6,9,14,10,10,13,11,12,12,12,6]);
+  styleHeaderRow(ws2, histRows[0].length);
+  XLSX.utils.book_append_sheet(wb, ws2, 'Trade History');
+
+  /* ─────────────────────────────────────
+     SHEET 3 — Monthly Analysis
+  ───────────────────────────────────── */
+  const byMonth = {};
+  closed.forEach(t => {
+    const key = (t.closeInfo?.dateClosed || t.dateOpened).slice(0,7);
+    (byMonth[key] = byMonth[key] || []).push(t);
+  });
+  const monthRows = [
+    ['Month','Trades','P&L ($)','Ann. ROI (%)','Avg Days Open','Expired','Closed Early']
+  ];
+  Object.keys(byMonth).sort().reverse().forEach(mk => {
+    const mT    = byMonth[mk];
+    const mPnL  = mT.reduce((s,t) => s + tradePnL(t), 0);
+    const mProf = mT.reduce((s,t) => {
+      return s + (t.status==='expired' ? totalPremiums(t) : totalPremiums(t)-(t.closeInfo?.buyingPrice||0));
+    }, 0);
+    const mStrikes = mT.reduce((s,t) => s + currentStrike(t), 0);
+    const mAvgDays = mT.reduce((s,t) => s + actualDays(t), 0) / mT.length;
+    const mROI = mStrikes > 0 ? (mProf/mStrikes)*(365/mAvgDays)*100 : 0;
+    const [y,m] = mk.split('-');
+    const mName = new Date(+y, +m-1).toLocaleString('default',{month:'long',year:'numeric'});
+    monthRows.push([
+      mName,
+      mT.length,
+      +mPnL.toFixed(2),
+      +mROI.toFixed(2),
+      Math.round(mAvgDays),
+      mT.filter(t=>t.status==='expired').length,
+      mT.filter(t=>t.status==='closed_early').length
+    ]);
+  });
+  // Totals row
+  if (monthRows.length > 1) {
+    const { pnl } = weightedStats();
+    monthRows.push(['TOTAL', closed.length, +pnl.toFixed(2), '', '', '', '']);
+  }
+  const ws3 = XLSX.utils.aoa_to_sheet(monthRows);
+  ws3['!cols'] = colW([20,8,11,14,15,9,12]);
+  styleHeaderRow(ws3, monthRows[0].length);
+  XLSX.utils.book_append_sheet(wb, ws3, 'Monthly Analysis');
+
+  /* ── Download ── */
+  XLSX.writeFile(wb, `options-tracker-${date}.xlsx`);
+}
+
+/* Apply bold + background to the first (header) row */
+function styleHeaderRow(ws, numCols) {
+  for (let c = 0; c < numCols; c++) {
+    const addr = XLSX.utils.encode_cell({ r: 0, c });
+    if (!ws[addr]) continue;
+    ws[addr].s = {
+      font:    { bold: true, color: { rgb: 'FFFFFF' } },
+      fill:    { fgColor: { rgb: '1A5FAF' } },
+      alignment: { horizontal: 'center' }
+    };
+  }
+}
+
 /* ═══════════════════════════════════════
    HARD REFRESH (pull latest from GitHub)
 ═══════════════════════════════════════ */
