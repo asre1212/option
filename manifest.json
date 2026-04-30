@@ -1,0 +1,40 @@
+{
+  "name": "Options Tracker",
+  "short_name": "Options",
+  "description": "Track options trades, calculate ROI and analyse performance — offline capable.",
+  "start_url": "./options-tracker.html?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f5f5f0",
+  "theme_color": "#f5f5f0",
+  "categories": ["finance", "utilities"],
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "New Trade",
+      "short_name": "Add",
+      "description": "Open the portfolio and add a trade",
+      "url": "./options-tracker.html?source=pwa&tab=portfolio"
+    },
+    {
+      "name": "ROI Calc",
+      "short_name": "ROI",
+      "description": "Open the ROI calculator",
+      "url": "./options-tracker.html?source=pwa&tab=roi"
+    }
+  ]
+}

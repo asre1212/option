@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#dce8f8"/>
+      <stop offset="100%" stop-color="#bdd0ee"/>
+    </linearGradient>
+  </defs>
+  <!-- rounded background -->
+  <rect width="512" height="512" rx="115" fill="url(#bg)"/>
+  <!-- subtle grid -->
+  <line x1="56" y1="165" x2="456" y2="165" stroke="#1a5faf" stroke-opacity=".1" stroke-width="2"/>
+  <line x1="56" y1="256" x2="456" y2="256" stroke="#1a5faf" stroke-opacity=".1" stroke-width="2"/>
+  <line x1="56" y1="347" x2="456" y2="347" stroke="#1a5faf" stroke-opacity=".1" stroke-width="2"/>
+  <!-- area under curve -->
+  <path d="M56,388 L140,308 L210,332 L300,214 L382,158 L456,98 L456,420 L56,420 Z"
+        fill="#1a5faf" fill-opacity=".13"/>
+  <!-- chart line -->
+  <polyline points="56,388 140,308 210,332 300,214 382,158 456,98"
+            fill="none" stroke="#1a5faf" stroke-width="20"
+            stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- endpoint glow -->
+  <circle cx="456" cy="98" r="22" fill="#1a5faf" fill-opacity=".25"/>
+  <circle cx="456" cy="98" r="14" fill="#1a5faf"/>
+  <circle cx="456" cy="98" r="6"  fill="white"/>
+  <!-- green up-arrow (top-right) -->
+  <polyline points="390,62 416,38 442,62"
+            fill="none" stroke="#1a7f4b" stroke-width="14"
+            stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="416" y1="38" x2="416" y2="82"
+        stroke="#1a7f4b" stroke-width="14" stroke-linecap="round"/>
+</svg>
