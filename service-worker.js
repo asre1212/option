@@ -4,8 +4,11 @@
    Cache is cleared by the "Update App" button
 ───────────────────────────────────────── */
 
-const CACHE_VERSION  = 'options-tracker-v1';
+const CACHE_VERSION  = 'options-tracker-v2';
 const CACHE_ASSETS   = [
+  './',
+  './index.html',
+  './app.js',
   './options-tracker.html',
   './manifest.json',
   './icon.svg'
@@ -42,15 +45,17 @@ self.addEventListener('fetch', event => {
     fetch(event.request)
       .then(networkResponse => {
         // Cache a fresh copy on every successful network hit
-        if (networkResponse && networkResponse.ok) {
+        // (opaque responses cover no-cors CDN assets like fonts)
+        if (networkResponse && (networkResponse.ok || networkResponse.type === 'opaque')) {
           const clone = networkResponse.clone();
           caches.open(CACHE_VERSION).then(cache => cache.put(event.request, clone));
         }
         return networkResponse;
       })
       .catch(() => {
-        // Network failed — serve from cache
-        return caches.match(event.request)
+        // Network failed — serve from cache. Navigations ignore query
+        // params so start_url variants (?source=pwa&tab=…) still hit.
+        return caches.match(event.request, { ignoreSearch: event.request.mode === 'navigate' })
           .then(cached => cached || new Response(
             '<h2 style="font-family:monospace;padding:2rem">Offline — no cached version available yet.<br>Open the app once while online first.</h2>',
             { headers: { 'Content-Type': 'text/html' } }

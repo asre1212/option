@@ -2,7 +2,7 @@
   "name": "Options Tracker",
   "short_name": "Options",
   "description": "Track options trades, calculate ROI and analyse performance — offline capable.",
-  "start_url": "./options-tracker.html?source=pwa",
+  "start_url": "./?source=pwa",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait-primary",
@@ -28,13 +28,13 @@
       "name": "New Trade",
       "short_name": "Add",
       "description": "Open the portfolio and add a trade",
-      "url": "./options-tracker.html?source=pwa&tab=portfolio"
+      "url": "./?source=pwa"
     },
     {
       "name": "ROI Calc",
       "short_name": "ROI",
       "description": "Open the ROI calculator",
-      "url": "./options-tracker.html?source=pwa&tab=roi"
+      "url": "./?source=pwa&tab=roi"
     }
   ]
 }
