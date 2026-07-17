@@ -4,7 +4,7 @@
    Cache is cleared by the "Update App" button
 ───────────────────────────────────────── */
 
-const CACHE_VERSION  = 'options-tracker-v2';
+const CACHE_VERSION  = 'options-tracker-v3';
 const CACHE_ASSETS   = [
   './',
   './index.html',
@@ -38,15 +38,18 @@ self.addEventListener('activate', event => {
 
 /* ── FETCH: network first, cache fallback ── */
 self.addEventListener('fetch', event => {
-  // Only handle GET requests for same-origin or CDN assets
+  // Only handle same-origin GET requests. Cross-origin CDN fetches
+  // (Tesseract WASM/traineddata, SheetJS) must go straight to the network:
+  // intercepting them and answering with a fabricated 200 on failure
+  // poisons those libraries' own caches with garbage bytes.
   if (event.request.method !== 'GET') return;
+  if (new URL(event.request.url).origin !== self.location.origin) return;
 
   event.respondWith(
     fetch(event.request)
       .then(networkResponse => {
         // Cache a fresh copy on every successful network hit
-        // (opaque responses cover no-cors CDN assets like fonts)
-        if (networkResponse && (networkResponse.ok || networkResponse.type === 'opaque')) {
+        if (networkResponse && networkResponse.ok) {
           const clone = networkResponse.clone();
           caches.open(CACHE_VERSION).then(cache => cache.put(event.request, clone));
         }
@@ -56,10 +59,18 @@ self.addEventListener('fetch', event => {
         // Network failed — serve from cache. Navigations ignore query
         // params so start_url variants (?source=pwa&tab=…) still hit.
         return caches.match(event.request, { ignoreSearch: event.request.mode === 'navigate' })
-          .then(cached => cached || new Response(
-            '<h2 style="font-family:monospace;padding:2rem">Offline — no cached version available yet.<br>Open the app once while online first.</h2>',
-            { headers: { 'Content-Type': 'text/html' } }
-          ));
+          .then(cached => {
+            if (cached) return cached;
+            // Only page navigations get the friendly offline page; a
+            // subresource must fail as a network error, never fake HTML.
+            if (event.request.mode === 'navigate') {
+              return new Response(
+                '<h2 style="font-family:monospace;padding:2rem">Offline — no cached version available yet.<br>Open the app once while online first.</h2>',
+                { headers: { 'Content-Type': 'text/html' } }
+              );
+            }
+            return Response.error();
+          });
       })
   );
 });

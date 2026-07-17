@@ -990,6 +990,11 @@ function hardRefresh() {
   btn.classList.add('spinning');
   btn.disabled = true;
 
+  // Also drop the OCR engine's IndexedDB cache ('keyval-store' is
+  // tesseract.js's traineddata store); trade data lives in localStorage
+  // and is untouched.
+  if (window.indexedDB) { try { indexedDB.deleteDatabase('keyval-store'); } catch(_) {} }
+
   // If service worker is available, tell it to clear cache then reload
   if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
     navigator.serviceWorker.controller.postMessage('CLEAR_AND_RELOAD');
@@ -1161,17 +1166,34 @@ function confirmImport() {
 ═══════════════════════════════════════ */
 
 // ── Lazy-load Tesseract ──
-let _tessLoaded = false;
+let _tessPromise = null;
 function loadTesseract() {
-  return new Promise((res, rej) => {
-    if (window.Tesseract) { res(); return; }
-    if (_tessLoaded) { const poll = setInterval(()=>{ if(window.Tesseract){clearInterval(poll);res();}},100); return; }
-    _tessLoaded = true;
+  if (window.Tesseract) return Promise.resolve();
+  if (_tessPromise) return _tessPromise;
+  _tessPromise = new Promise((res, rej) => {
     const s = document.createElement('script');
-    s.src = 'https://unpkg.com/tesseract.js@4.1.4/dist/tesseract.min.js';
-    s.onload = res; s.onerror = rej;
+    s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+    s.onload = res;
+    s.onerror = () => {
+      _tessPromise = null;   // allow a retry on the next scan attempt
+      s.remove();
+      rej(new Error('Could not download the OCR library'));
+    };
     document.head.appendChild(s);
   });
+  return _tessPromise;
+}
+
+// ── Create an OCR worker ──
+// First attempt uses tesseract.js's normal IndexedDB cache; if init fails
+// (e.g. the cached eng.traineddata was corrupted by an earlier interrupted
+// download) retry once with cacheMethod:'refresh' to redownload clean data.
+async function createOcrWorker(logger) {
+  try {
+    return await Tesseract.createWorker('eng', 1, { logger });
+  } catch (_) {
+    return await Tesseract.createWorker('eng', 1, { logger, cacheMethod: 'refresh' });
+  }
 }
 
 // ── Parse OCR text into trade fields ──
@@ -1308,9 +1330,36 @@ function fileThumbnail(file) {
   });
 }
 
+// ── Normalize an image before OCR ──
+// Re-encodes through a canvas so the OCR engine always receives PNG bytes.
+// This makes iPhone HEIC photos work wherever the browser can decode them,
+// and turns unreadable files into a clear error instead of a cryptic one.
+function normalizeImage(file) {
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 2200;   // cap the long edge; plenty for screenshot text
+      const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width  = Math.max(1, Math.round(img.width  * scale));
+      canvas.height = Math.max(1, Math.round(img.height * scale));
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(b => b ? res(b) : rej(new Error('Could not convert image')), 'image/png');
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      rej(new Error(`Could not read "${file.name}" — unsupported image format. Use a PNG or JPEG screenshot.`));
+    };
+    img.src = url;
+  });
+}
+
 // ── OCR a single file ──
 async function ocrFile(file, worker) {
-  const { data: { text } } = await worker.recognize(file);
+  const blob = await normalizeImage(file);
+  const { data: { text } } = await worker.recognize(blob);
   return text;
 }
 
@@ -1332,13 +1381,12 @@ async function handleImageFiles(files) {
   const fname   = document.getElementById('scan-file-name');
   prog.classList.add('active');
 
+  let worker = null;
   try {
     await loadTesseract();
-    const worker = await Tesseract.createWorker('eng', 1, {
-      logger: m => {
-        if (m.status === 'recognizing text') {
-          bar.style.width = ((m.progress * 80) + (currentIdx / files.length * 20)).toFixed(1) + '%';
-        }
+    worker = await createOcrWorker(m => {
+      if (m.status === 'recognizing text') {
+        bar.style.width = ((m.progress * 80) + (currentIdx / files.length * 20)).toFixed(1) + '%';
       }
     });
 
@@ -1361,7 +1409,6 @@ async function handleImageFiles(files) {
       scanResults.push(parsed);
     }
 
-    await worker.terminate();
     prog.classList.remove('active');
     renderScanResults();
 
@@ -1369,9 +1416,13 @@ async function handleImageFiles(files) {
     prog.classList.remove('active');
     document.getElementById('scan-results').innerHTML =
       `<div class="rc-warn" style="padding:12px;border-radius:12px;font-size:11px">
-        ⚠ Could not process images. Check your internet connection (OCR requires network) and try again.<br><br>
+        ⚠ Could not process images. The first scan needs a network connection to download
+        the OCR engine — check your connection and try again. If it keeps failing, use the
+        <b>Update App</b> button in Backup to clear cached data, then retry.<br><br>
         <span style="opacity:.7">${esc(err.message||err)}</span>
       </div>`;
+  } finally {
+    if (worker) { try { await worker.terminate(); } catch(_) {} }
   }
   // reset file input so same files can be re-selected
   document.getElementById('img-input').value = '';
