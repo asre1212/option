@@ -1196,6 +1196,22 @@ async function createOcrWorker(logger) {
   }
 }
 
+// ── Date helpers for OCR parsing ──
+function parseSlashDate(s) {
+  const m = String(s).match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if (!m) return null;
+  let yr = parseInt(m[3]); if (yr < 100) yr += 2000;
+  const d = new Date(yr, parseInt(m[1]) - 1, parseInt(m[2]));
+  return isNaN(d) ? null : d;
+}
+function isoDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function dteFromToday(d) {
+  const today0 = new Date(); today0.setHours(0,0,0,0);
+  return Math.max(1, Math.ceil((d - today0) / 86400000));
+}
+
 // ── Parse OCR text into trade fields ──
 function parseTradeText(raw) {
   const t  = raw;
@@ -1203,7 +1219,7 @@ function parseTradeText(raw) {
 
   const out = {
     ticker:'', strike:'', premium:'', type:'put',
-    dte:'', dateOpened: todayStr(),
+    dte:'', expDate:'', qty:null, dateOpened: todayStr(),
     action: null,   // 'new_trade' | 'close_trade' | 'roll'
     rawText: raw, thumb: null
   };
@@ -1220,6 +1236,33 @@ function parseTradeText(raw) {
   if      (/\bput\b/i.test(t))  out.type = 'put';
   else if (/\bcall\b/i.test(t)) out.type = 'call';
 
+  // ── Structured "Order Status" layout ──
+  // Brokerage order screens carry an OCC-style descriptor line with the core
+  // fields in one place, e.g. "GOOG 08/28/2026 330.00 P". Trust it over the
+  // looser heuristics below whenever it's present.
+  const desc = tu.match(/\b([A-Z]{1,6})\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+\$?(\d{1,5}(?:\.\d{1,2})?)\s*([PC])(?:UT|ALL)?\b/);
+  if (desc) {
+    out.ticker = desc[1];
+    out.type   = desc[4] === 'C' ? 'call' : 'put';
+    const st = parseFloat(desc[3]);
+    if (st >= 1) out.strike = st;
+    const ed = parseSlashDate(desc[2]);
+    if (ed) { out.expDate = isoDate(ed); out.dte = dteFromToday(ed); }
+  }
+
+  // Fill Price is the premium actually received/paid — prefer it over the limit
+  const fp = tu.match(/FILL\s*PRICE\s*:?\s*\$?(\d{1,4}(?:\.\d{1,3})?)/);
+  if (fp) { const v = parseFloat(fp[1]); if (v > 0) out.premium = v; }
+
+  // Contracts filled
+  const qm = tu.match(/FILLED\s*QTY\.?\s*:?\s*(\d{1,4})\b/)
+          || tu.match(/(?:BUY|SELL)\s+TO\s+(?:OPEN|CLOSE)\s+(\d{1,4})\s*@/);
+  if (qm) out.qty = Math.max(1, parseInt(qm[1]));
+
+  // Fill/Create Time carries the date the order actually executed
+  const ft = tu.match(/(?:FILL|CREATE)\s*TIME[^\n]*?(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
+  if (ft) { const fd = parseSlashDate(ft[1]); if (fd) out.dateOpened = isoDate(fd); }
+
   // ── Ticker ──
   const SKIP = new Set(['TO','A','PUT','CALL','BUY','SELL','OPEN','CLOSE','LIMIT',
     'MARKET','STOP','TRADE','CONTRACT','CONTRACTS','ORDER','FILL','FILLED','CONFIRM',
@@ -1230,7 +1273,7 @@ function parseTradeText(raw) {
     'JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC',
     'ROLL','ROLLED','AND','OR','FOR','AT','IN','ON','IS','ARE','THE','OF']);
   // Prefer ticker that precedes put/call/strike/dollar sign
-  const m1 = t.match(/\b([A-Z]{1,5})\b(?=\s*(?:put|call|\$\d|\d{2,4}\s*(?:put|call)))/i);
+  const m1 = out.ticker ? null : t.match(/\b([A-Z]{1,5})\b(?=\s*(?:put|call|\$\d|\d{2,4}\s*(?:put|call)))/i);
   if (m1 && !SKIP.has(m1[1].toUpperCase())) { out.ticker = m1[1].toUpperCase(); }
   if (!out.ticker) {
     const words = tu.match(/\b[A-Z]{1,5}\b/g) || [];
@@ -1246,6 +1289,7 @@ function parseTradeText(raw) {
     /(?:@|at)\s*\$?(\d{2,4}(?:\.\d{0,2})?)\b/i,
   ];
   for (const p of strikePs) {
+    if (out.strike) break;
     const m = t.match(p);
     if (m) { const v = parseFloat(m[1]); if (v >= 5) { out.strike = v; break; } }
   }
@@ -1258,6 +1302,7 @@ function parseTradeText(raw) {
     /(?:credit|debit)\s*(?:of\s*)?\$?(\d{1,3}\.\d{2})/i,
   ];
   for (const p of premPs) {
+    if (out.premium) break;
     const m = t.match(p);
     if (m) { const v = parseFloat(m[1]); if (v > 0 && v < 500) { out.premium = v; break; } }
   }
@@ -1270,14 +1315,19 @@ function parseTradeText(raw) {
     }
   }
 
-  // ── Expiration date → DTE ──
+  // ── Expiration date → DTE (fallback when no descriptor line matched) ──
+  // Search text with screen-timestamp and execution-time lines removed, so
+  // "Updated: … 07/17/2026" or "Fill Time … 07/15/2026" can't masquerade
+  // as the expiration.
+  if (!out.expDate) {
+  const tClean = t.replace(/(?:updated|fill\s*time|create\s*time)[^\n]*/gi, '');
   const MONTHS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
   const mRe = new RegExp(`(${MONTHS.join('|')})\\.?\\s*(\\d{1,2})(?:,?\\s*(\\d{2,4}))?`, 'i');
   const nRe = /\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\b/;
   let expDate = null;
 
-  const mm = t.match(mRe);
-  const nm = t.match(nRe);
+  const mm = tClean.match(mRe);
+  const nm = tClean.match(nRe);
   if (mm) {
     const mi = MONTHS.findIndex(x => mm[1].toLowerCase().startsWith(x));
     const day = parseInt(mm[2]);
@@ -1290,14 +1340,15 @@ function parseTradeText(raw) {
     expDate = new Date(yr, parseInt(nm[1])-1, parseInt(nm[2]));
   }
   if (expDate && !isNaN(expDate)) {
-    const today0 = new Date(); today0.setHours(0,0,0,0);
-    out.dte = Math.max(1, Math.ceil((expDate - today0) / 86400000));
+    out.expDate = isoDate(expDate);
+    out.dte = dteFromToday(expDate);
+  }
   }
 
-  // ── Date opened ──
+  // ── Date opened (fallback when no Fill/Create Time line matched) ──
   // Try to find "placed" or "order date" near a date
   const oRe = /(?:placed|opened?|order\s+date|date)[:\s]+(\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?)/i;
-  const om = t.match(oRe);
+  const om = ft ? null : t.match(oRe);
   if (om) {
     const [mo,dy,yr] = om[1].split(/[\/\-]/);
     let year = yr ? parseInt(yr) : new Date().getFullYear();
@@ -1484,7 +1535,10 @@ function buildResultCardHTML(r, idx) {
   const [badgeCls, badgeTxt] = badges[r.action] || badges[null];
 
   // Detected summary line
-  const detected = [esc(r.ticker), esc(r.type?.toUpperCase()), r.strike ? `$${esc(r.strike)}` : '', r.dte ? `${esc(r.dte)}d` : '']
+  const expLabel = r.expDate
+    ? 'Exp ' + new Date(r.expDate + 'T00:00:00').toLocaleDateString()
+    : (r.dte ? `${esc(r.dte)}d` : '');
+  const detected = [esc(r.ticker), esc(r.type?.toUpperCase()), r.strike ? `$${esc(r.strike)}` : '', expLabel]
     .filter(Boolean).join(' · ') || 'No data detected';
 
   // Confidence warnings
@@ -1492,7 +1546,7 @@ function buildResultCardHTML(r, idx) {
   if (!r.ticker)  warns += `<div class="rc-warn">⚠ Ticker not detected — please enter manually</div>`;
   if (!r.strike)  warns += `<div class="rc-warn">⚠ Strike price not detected — please enter manually</div>`;
   if (!r.premium) warns += `<div class="rc-warn">⚠ Premium not detected — please enter manually</div>`;
-  if (!r.dte)     warns += `<div class="rc-warn">⚠ Expiration not detected — please enter manually</div>`;
+  if (!r.expDate && !r.dte) warns += `<div class="rc-warn">⚠ Expiration not detected — please enter manually</div>`;
 
   // Trade selector for close / roll
   let linkBox = '';
@@ -1556,9 +1610,9 @@ function buildResultCardHTML(r, idx) {
                  step="0.01" value="${esc(r.premium||'')}">
         </div>
         <div class="rc-field">
-          <div class="rc-field-lbl">Days to Expiration</div>
-          <input type="number" id="rc-dte-${idx}" placeholder="30"
-                 value="${esc(r.dte||'')}">
+          <div class="rc-field-lbl">Expiration Date</div>
+          <input type="date" id="rc-exp-${idx}"
+                 value="${esc(r.expDate || (r.dte ? dateFromDTE(r.dte) : ''))}">
         </div>
         <div class="rc-field">
           <div class="rc-field-lbl">Date Opened</div>
@@ -1566,7 +1620,7 @@ function buildResultCardHTML(r, idx) {
         </div>
         <div class="rc-field">
           <div class="rc-field-lbl">Contracts</div>
-          <input type="number" id="rc-qty-${idx}" placeholder="1" min="1" step="1" value="1">
+          <input type="number" id="rc-qty-${idx}" placeholder="1" min="1" step="1" value="${esc(r.qty||1)}">
         </div>
         ${extraField}
       </div>
@@ -1595,7 +1649,8 @@ function rcAccept(idx, action) {
   const ticker  = (document.getElementById(`rc-ticker-${idx}`)?.value||'').toUpperCase().trim();
   const strike  = parseFloat(document.getElementById(`rc-strike-${idx}`)?.value);
   const prem    = parseFloat(document.getElementById(`rc-prem-${idx}`)?.value);
-  const dte     = parseInt(document.getElementById(`rc-dte-${idx}`)?.value);
+  const expSel  = document.getElementById(`rc-exp-${idx}`)?.value || '';
+  const dte     = expSel ? dteFromDate(expSel) : NaN;
   const qty     = Math.max(1, parseInt(document.getElementById(`rc-qty-${idx}`)?.value) || 1);
   const dateOp  = document.getElementById(`rc-date-${idx}`)?.value || todayStr();
   const putBtn  = document.getElementById(`rc-put-${idx}`);
@@ -1609,8 +1664,8 @@ function rcAccept(idx, action) {
   const d = load();
 
   if (action === 'new_trade' || action === 'roll') {
-    if (!strike || !prem || !dte) { alert('Please fill in Strike, Premium, and DTE'); return; }
-    const expDate = dateFromDTE(dte);
+    if (!strike || !prem || !dte) { alert('Please fill in Strike, Premium, and Expiration Date'); return; }
+    const expDate = expSel;
 
     if (action === 'roll' && linkedId) {
       // Apply as roll to existing trade
