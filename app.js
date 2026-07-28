@@ -225,6 +225,496 @@ function addTrade() {
 }
 
 /* ═══════════════════════════════════════
+   BATCH HISTORIC ENTRY
+   Bulk-enter trades that were made in the past and never logged.
+   Two ways in — tap-friendly rows, or a paste from a spreadsheet —
+   both feeding the same validate → preview → commit pipeline.
+   Everything is derived from the dates entered (open / expiration /
+   close), never from today, so old trades land with the right DTE,
+   ROI and P&L.
+═══════════════════════════════════════ */
+let batchMode     = 'rows';
+let _batchSeq     = 0;
+let _lastBatchIds = [];
+
+const dateOffset = n => {
+  const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() + n);
+  return d.toISOString().split('T')[0];
+};
+
+// Whole days from a to b (negative when b precedes a)
+function daysBetween(aISO, bISO) {
+  return Math.round((new Date(bISO + 'T00:00:00') - new Date(aISO + 'T00:00:00')) / 86400000);
+}
+
+const BATCH_MONTHS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+
+// Read the date formats people actually paste. Returns ISO or null.
+function parseFlexDate(v) {
+  const s = String(v ?? '').trim();
+  if (!s) return null;
+  const mk = (y, mi, d) => {
+    const dt = new Date(y, mi, d);
+    return isNaN(dt) || dt.getMonth() !== mi || dt.getDate() !== d ? null : isoDate(dt);
+  };
+  const year = m => { let y = m ? parseInt(m) : new Date().getFullYear(); return y < 100 ? y + 2000 : y; };
+  let m;
+  if ((m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})$/)))              // 2026-02-20
+    return mk(+m[1], +m[2] - 1, +m[3]);
+  if ((m = s.match(/^(\d{1,2})[-\/.](\d{1,2})(?:[-\/.](\d{2,4}))?$/)))       // 2/20/2026 (US order)
+    return mk(year(m[3]), +m[1] - 1, +m[2]);
+  if ((m = s.match(/^([a-z]{3,9})\.?\s+(\d{1,2})(?:[,\s]+(\d{2,4}))?$/i))) { // Feb 20 2026
+    const mi = BATCH_MONTHS.findIndex(x => m[1].toLowerCase().startsWith(x));
+    return mi < 0 ? null : mk(year(m[3]), mi, +m[2]);
+  }
+  if ((m = s.match(/^(\d{1,2})[-\s]+([a-z]{3,9})\.?(?:[,\s-]+(\d{2,4}))?$/i))) { // 20 Feb 2026
+    const mi = BATCH_MONTHS.findIndex(x => m[2].toLowerCase().startsWith(x));
+    return mi < 0 ? null : mk(year(m[3]), mi, +m[1]);
+  }
+  return null;
+}
+
+function normBatchType(v) {
+  const s = String(v ?? '').trim().toLowerCase().replace(/[^a-z]/g, '');
+  if (!s) return null;
+  if (/^(p|put|puts|cashsecuredput|csp|shortput)$/.test(s))  return 'put';
+  if (/^(c|call|calls|coveredcall|cc|shortcall)$/.test(s))   return 'call';
+  return null;
+}
+
+// '' / 'auto' → decide from the expiration date
+function normBatchStatus(v, expiry, today) {
+  const s = String(v ?? '').trim().toLowerCase().replace(/[^a-z]/g, '');
+  if (!s || s === 'auto') return expiry ? (expiry < today ? 'expired' : 'active') : null;
+  if (/^(active|open|ongoing|current|live|running|a|o)$/.test(s))                       return 'active';
+  if (/^(expired|expire|exp|expiredworthless|worthless|assigned|assign|exercised|e)$/.test(s)) return 'expired';
+  if (/^(closed|close|closedearly|boughtback|buyback|bought|btc|c)$/.test(s))           return 'closed_early';
+  return null;
+}
+
+/* ── Open / mode switching ── */
+function openBatchModal() {
+  document.getElementById('bt-preview').innerHTML   = '';
+  document.getElementById('bt-done-banner').innerHTML = '';
+  document.getElementById('bt-commit').style.display = 'none';
+  if (!document.querySelectorAll('#bt-rows .batch-row').length) batchAddRow(3);
+  setBatchMode(batchMode);
+  openOverlay('m-batch');
+}
+
+function setBatchMode(mode) {
+  batchMode = mode === 'paste' ? 'paste' : 'rows';
+  document.getElementById('bt-mode-rows').classList.toggle('selected',  batchMode === 'rows');
+  document.getElementById('bt-mode-paste').classList.toggle('selected', batchMode === 'paste');
+  document.getElementById('bt-rows-pane').style.display  = batchMode === 'rows'  ? 'block' : 'none';
+  document.getElementById('bt-paste-pane').style.display = batchMode === 'paste' ? 'block' : 'none';
+  document.getElementById('bt-preview').innerHTML = '';
+  document.getElementById('bt-commit').style.display = 'none';
+}
+
+/* ── Rows mode ── */
+function batchAddRow(count) {
+  count = Math.max(1, parseInt(count) || 1);
+  const wrap = document.getElementById('bt-rows');
+  // Carry the previous row's dates forward — batches usually share a period
+  const last = wrap.lastElementChild;
+  const prev = last ? {
+    opened: document.getElementById(`bt-opened-${last.dataset.idx}`)?.value || '',
+    expiry: document.getElementById(`bt-expiry-${last.dataset.idx}`)?.value || ''
+  } : { opened:'', expiry:'' };
+  for (let n = 0; n < count; n++) {
+    const i   = _batchSeq++;
+    const div = document.createElement('div');
+    div.className = 'batch-row';
+    div.id = `bt-row-${i}`;
+    div.dataset.idx = i;
+    div.innerHTML = batchRowHTML(i, prev);
+    wrap.appendChild(div);
+  }
+  renumberBatchRows();
+}
+
+function batchRowHTML(i, prev) {
+  return `
+    <div class="batch-row-hdr">
+      <div class="batch-row-num" id="bt-num-${i}">Trade</div>
+      <button class="batch-row-del" onclick="batchRemoveRow(${i})" aria-label="Remove row">✕</button>
+    </div>
+    <div class="batch-fields">
+      <div class="batch-field">
+        <div class="batch-field-lbl">Ticker</div>
+        <input type="text" id="bt-ticker-${i}" placeholder="AAPL" style="text-transform:uppercase"
+               oninput="this.value=this.value.toUpperCase()">
+      </div>
+      <div class="batch-field">
+        <div class="batch-field-lbl">Type</div>
+        <select id="bt-type-${i}">
+          <option value="put">PUT</option>
+          <option value="call">CALL</option>
+        </select>
+      </div>
+      <div class="batch-field">
+        <div class="batch-field-lbl">Strike</div>
+        <input type="number" id="bt-strike-${i}" placeholder="150.00" step="0.01">
+      </div>
+      <div class="batch-field">
+        <div class="batch-field-lbl">Premium</div>
+        <input type="number" id="bt-premium-${i}" placeholder="1.50" step="0.01">
+      </div>
+      <div class="batch-field">
+        <div class="batch-field-lbl">Date Opened</div>
+        <input type="date" id="bt-opened-${i}" value="${esc(prev?.opened || '')}">
+      </div>
+      <div class="batch-field">
+        <div class="batch-field-lbl">Expiration</div>
+        <input type="date" id="bt-expiry-${i}" value="${esc(prev?.expiry || '')}">
+      </div>
+      <div class="batch-field">
+        <div class="batch-field-lbl">Contracts</div>
+        <input type="number" id="bt-qty-${i}" placeholder="1" min="1" step="1" value="1">
+      </div>
+      <div class="batch-field">
+        <div class="batch-field-lbl">Outcome</div>
+        <select id="bt-status-${i}" onchange="batchStatusChange(${i})">
+          <option value="auto">Auto</option>
+          <option value="active">Still active</option>
+          <option value="expired">Expired / assigned</option>
+          <option value="closed">Closed early</option>
+        </select>
+      </div>
+      <div class="batch-close-fields" id="bt-closewrap-${i}">
+        <div class="batch-field">
+          <div class="batch-field-lbl">Buy-back Price</div>
+          <input type="number" id="bt-closeprice-${i}" placeholder="0.45" step="0.01">
+        </div>
+        <div class="batch-field">
+          <div class="batch-field-lbl">Close Date</div>
+          <input type="date" id="bt-closedate-${i}">
+        </div>
+      </div>
+    </div>`;
+}
+
+function batchStatusChange(i) {
+  const closed = document.getElementById(`bt-status-${i}`).value === 'closed';
+  document.getElementById(`bt-closewrap-${i}`).classList.toggle('show', closed);
+}
+
+function batchRemoveRow(i) {
+  document.getElementById(`bt-row-${i}`)?.remove();
+  renumberBatchRows();
+}
+
+function renumberBatchRows() {
+  document.querySelectorAll('#bt-rows .batch-row').forEach((el, n) => {
+    const lbl = document.getElementById(`bt-num-${el.dataset.idx}`);
+    if (lbl) lbl.textContent = 'Trade ' + (n + 1);
+  });
+}
+
+// Read the row cards into raw records; untouched rows are ignored
+function collectBatchRows() {
+  return [...document.querySelectorAll('#bt-rows .batch-row')].map((el, n) => {
+    const i = el.dataset.idx;
+    const g = f => (document.getElementById(`bt-${f}-${i}`)?.value || '').trim();
+    return {
+      label: 'Trade ' + (n + 1), _el: el,
+      ticker: g('ticker'), type: g('type'), strike: g('strike'), premium: g('premium'),
+      qty: g('qty'), opened: g('opened'), expiry: g('expiry'), status: g('status'),
+      closePrice: g('closeprice'), closeDate: g('closedate')
+    };
+  }).filter(r => r.ticker || r.strike || r.premium);
+}
+
+/* ── Paste mode ── */
+const BATCH_FIELDS = [
+  ['ticker',     ['ticker','symbol','stock','underlying']],
+  ['type',       ['type','putcall','callput','side','option','optiontype','class']],
+  ['strike',     ['strike','strikeprice']],
+  ['premium',    ['premium','prem','credit','price','fillprice','premiumreceived']],
+  ['qty',        ['qty','quantity','contracts','contract','size','numcontracts']],
+  ['opened',     ['opened','dateopened','opendate','date','entry','entrydate','tradedate','filled','filldate','sold']],
+  ['expiry',     ['expiry','expiration','exp','expdate','expirationdate','expires','expiry date']],
+  ['status',     ['status','outcome','result','state']],
+  ['closePrice', ['closeprice','buyprice','buyback','buybackprice','buytoclose','btc','closingprice','costtoclose','exitprice']],
+  ['closeDate',  ['closedate','dateclosed','closed','exit','exitdate']],
+];
+const BATCH_ORDER = BATCH_FIELDS.map(f => f[0]);
+
+const cleanCell = c => String(c).trim().replace(/^["']+|["']+$/g, '').trim();
+
+function splitBatchLine(line) {
+  if (line.includes('\t')) return line.split('\t').map(cleanCell);
+  if (!line.includes(',') && line.includes(';')) return line.split(';').map(cleanCell);
+  if (!line.includes(',') && line.includes('|')) return line.split('|').map(cleanCell);
+  // comma-separated, honouring quoted cells
+  const out = []; let cur = '', q = false;
+  for (const ch of line) {
+    if (ch === '"') { q = !q; continue; }
+    if (ch === ',' && !q) { out.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  out.push(cur);
+  return out.map(cleanCell);
+}
+
+const headerKey = c => String(c).toLowerCase().replace(/[^a-z]/g, '');
+
+// Map a header row to field names; null when the line isn't a header
+function batchHeaderMap(cells) {
+  const map = []; let hits = 0;
+  cells.forEach(c => {
+    const k = headerKey(c);
+    const f = BATCH_FIELDS.find(([, aliases]) => aliases.some(a => headerKey(a) === k));
+    if (f) { map.push(f[0]); hits++; } else map.push(null);
+  });
+  return hits >= 2 ? map : null;
+}
+
+function parseBatchText(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const rows  = [];
+  let map = null, headerLine = null;
+  lines.forEach((line, n) => {
+    if (!line.trim()) return;
+    const cells = splitBatchLine(line);
+    if (!cells.some(c => c)) return;
+    if (!rows.length && !map) {
+      const hm = batchHeaderMap(cells);
+      if (hm) { map = hm; headerLine = line; return; }
+    }
+    const raw = { label: 'Line ' + (n + 1), _line: line };
+    (map || BATCH_ORDER).forEach((field, ci) => {
+      if (field) raw[field] = cells[ci] || '';
+    });
+    rows.push(raw);
+  });
+  return { rows, headerLine };
+}
+
+function batchLoadCsvFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    document.getElementById('bt-paste').value = String(e.target.result || '').trim();
+    batchReview();
+  };
+  reader.onerror = () => alert('Could not read that file.');
+  reader.readAsText(file);
+  document.getElementById('bt-csv-input').value = '';
+}
+
+function batchInsertExample() {
+  document.getElementById('bt-paste').value = [
+    'Ticker, Type, Strike, Premium, Contracts, Opened, Expiry, Outcome, Close Price, Close Date',
+    `AAPL, PUT,  150, 1.50, 1, ${dateOffset(-120)}, ${dateOffset(-90)}, expired`,
+    `MSFT, CALL, 420, 3.10, 2, ${dateOffset(-95)},  ${dateOffset(-60)}, closed, 0.45, ${dateOffset(-70)}`,
+    `NVDA, PUT,  120, 1.05, 1, ${dateOffset(-20)},  ${dateOffset(15)},  active`
+  ].join('\n');
+  batchReview();
+}
+
+/* ── Validation ── */
+// Turn one raw record into a trade, or a list of reasons it can't be used.
+function normalizeBatchRow(raw) {
+  const errors = [], notes = [];
+  const num = v => {
+    const n = parseFloat(String(v ?? '').replace(/[$,%\s]/g, ''));
+    return isFinite(n) ? n : null;
+  };
+  const today = todayStr();
+
+  const ticker = String(raw.ticker || '').toUpperCase().replace(/[^A-Z.]/g, '').slice(0, 6);
+  if (!ticker)                    errors.push('ticker missing');
+  else if (!TICKER_RE.test(ticker)) errors.push('ticker must be 1–6 letters');
+
+  const type = normBatchType(raw.type);
+  if (!type) errors.push(raw.type ? `type "${raw.type}" not understood — use PUT or CALL` : 'type missing (PUT or CALL)');
+
+  const strike = num(raw.strike);
+  if (strike == null || strike <= 0) errors.push('strike missing or invalid');
+  const premium = num(raw.premium);
+  if (premium == null || premium <= 0) errors.push('premium missing or invalid');
+
+  const qty = Math.max(1, parseInt(num(raw.qty)) || 1);
+
+  const opened = parseFlexDate(raw.opened);
+  const expiry = parseFlexDate(raw.expiry);
+  if (!opened) errors.push(raw.opened ? `date opened "${raw.opened}" not understood` : 'date opened missing');
+  if (!expiry) errors.push(raw.expiry ? `expiration "${raw.expiry}" not understood` : 'expiration missing');
+  if (opened && opened > today) errors.push('date opened is in the future');
+  if (opened && expiry && daysBetween(opened, expiry) < 0) errors.push('expiration falls before the open date');
+
+  const rawStatus = String(raw.status || '').trim();
+  const status    = normBatchStatus(rawStatus, expiry, today);
+  if (!status) errors.push(rawStatus ? `outcome "${rawStatus}" not understood — use active, expired or closed` : 'outcome missing');
+  if (/^(assign|exercis)/i.test(rawStatus.replace(/[^a-z]/gi, '')))
+    notes.push('recorded as expired — the full premium is kept either way');
+
+  let closeInfo = null;
+  if (status === 'expired') {
+    if (expiry && expiry > today) errors.push('marked expired but the expiration is still in the future');
+    if (expiry) closeInfo = { dateClosed: expiry };
+  } else if (status === 'closed_early') {
+    const buy = num(raw.closePrice);
+    if (buy == null)   errors.push('buy-back price required for a closed trade');
+    else if (buy < 0)  errors.push('buy-back price cannot be negative');
+    let closeDate = parseFlexDate(raw.closeDate);
+    if (!closeDate && raw.closeDate) errors.push(`close date "${raw.closeDate}" not understood`);
+    if (!closeDate && !raw.closeDate && expiry) {
+      closeDate = expiry <= today ? expiry : today;
+      notes.push(`no close date given — using ${closeDate}`);
+    }
+    if (closeDate && opened && daysBetween(opened, closeDate) < 0) errors.push('close date falls before the open date');
+    if (closeDate && closeDate > today) errors.push('close date is in the future');
+    if (buy != null && closeDate) closeInfo = { buyingPrice: buy, dateClosed: closeDate };
+  } else if (status === 'active' && expiry && expiry < today) {
+    notes.push('expiration has already passed — it will show as "past exp" until you close it');
+  }
+
+  if (errors.length) return { ok: false, errors, notes, label: raw.label, src: raw };
+
+  const dte = Math.max(1, daysBetween(opened, expiry));
+  const trade = {
+    id: uid(), ticker, strikePrice: strike, premium, qty,
+    type, dteAtExecution: dte, expDate: expiry,
+    roiAtExecution: roiPct(premium, strike, dte),
+    dateOpened: opened, status, rolls: [], closeInfo
+  };
+  return { ok: true, trade, errors, notes, label: raw.label, src: raw };
+}
+
+function batchValidate() {
+  const parsed = batchMode === 'paste'
+    ? parseBatchText(document.getElementById('bt-paste').value)
+    : { rows: collectBatchRows(), headerLine: null };
+  return { results: parsed.rows.map(normalizeBatchRow), headerLine: parsed.headerLine };
+}
+
+/* ── Preview ── */
+function batchReview() {
+  const { results } = batchValidate();
+  const box = document.getElementById('bt-preview');
+  const commitBtn = document.getElementById('bt-commit');
+  document.getElementById('bt-done-banner').innerHTML = '';
+
+  if (!results.length) {
+    box.innerHTML = `<div class="bt-preview-hdr">Preview</div>
+      <div class="info-box">Nothing to check yet — ${batchMode === 'paste'
+        ? 'paste your trades above.' : 'fill in at least one row above.'}</div>`;
+    commitBtn.style.display = 'none';
+    return;
+  }
+
+  const good   = results.filter(r => r.ok);
+  const closed = good.filter(r => r.trade.status !== 'active').map(r => r.trade);
+  const pnl    = closed.reduce((s, t) => s + tradePnL(t), 0);
+  const roi    = closed.length ? annualizedROI(closed) : null;
+
+  let html = `<div class="bt-preview-hdr">Preview — ${results.length} entr${results.length === 1 ? 'y' : 'ies'}</div>
+    <div class="bt-summary">
+      <div class="bt-sum-card">
+        <div class="bt-sum-lbl">Ready</div>
+        <div class="bt-sum-val ${good.length ? 'green' : ''}">${good.length}</div>
+      </div>
+      <div class="bt-sum-card">
+        <div class="bt-sum-lbl">Problems</div>
+        <div class="bt-sum-val ${results.length - good.length ? 'red' : ''}">${results.length - good.length}</div>
+      </div>
+      <div class="bt-sum-card">
+        <div class="bt-sum-lbl">Realized P&amp;L</div>
+        <div class="bt-sum-val ${pnl >= 0 ? 'green' : 'red'}">${pnl >= 0 ? '+$' : '-$'}${Math.abs(pnl).toFixed(0)}</div>
+      </div>
+    </div>`;
+
+  if (roi != null) {
+    html += `<div class="info-box">Adds ${closed.length} closed trade${closed.length === 1 ? '' : 's'}
+      at <b>${roi.toFixed(1)}%</b> weighted annualized ROI.</div>`;
+  }
+
+  results.forEach(r => {
+    if (!r.ok) {
+      html += `<div class="bt-prow bad">
+        <div class="bt-prow-top"><div class="bt-prow-name">${esc(r.label)}${r.src.ticker ? ' · ' + esc(String(r.src.ticker).toUpperCase()) : ''}</div></div>
+        <div class="bt-prow-err">${r.errors.map(e => '⚠ ' + esc(e)).join('<br>')}</div>
+      </div>`;
+      return;
+    }
+    const t   = r.trade;
+    const p   = tradePnL(t);
+    const dur = t.status === 'active' ? `${t.dteAtExecution}d to exp` : `${actualDays(t)}d held`;
+    const st  = t.status === 'active' ? 'active' : t.status === 'expired' ? 'expired' : 'closed early';
+    html += `<div class="bt-prow">
+      <div class="bt-prow-top">
+        <div class="bt-prow-name">${esc(t.ticker)} <span class="muted" style="font-size:10px">${esc(t.type.toUpperCase())} $${t.strikePrice}${t.qty > 1 ? ' ×' + t.qty : ''}</span></div>
+        <div class="bt-prow-pnl ${t.status === 'active' ? 'muted' : p >= 0 ? 'green' : 'red'}">${
+          t.status === 'active' ? '—' : (p >= 0 ? '+$' : '-$') + Math.abs(p).toFixed(2)}</div>
+      </div>
+      <div class="bt-prow-meta">${esc(t.dateOpened)} → ${esc(t.expDate)} · ${dur} · ${st} · ${roiPct(
+        t.status === 'closed_early' ? t.premium - (t.closeInfo?.buyingPrice || 0) : t.premium,
+        t.strikePrice, t.status === 'active' ? t.dteAtExecution : actualDays(t)).toFixed(1)}% ann. ROI</div>
+      ${r.notes.length ? `<div class="bt-prow-note">${r.notes.map(n => '• ' + esc(n)).join('<br>')}</div>` : ''}
+    </div>`;
+  });
+
+  box.innerHTML = html;
+  commitBtn.textContent = good.length
+    ? `Add ${good.length} Trade${good.length === 1 ? '' : 's'}`
+    : 'Nothing to add';
+  commitBtn.style.display = good.length ? 'block' : 'none';
+}
+
+/* ── Commit ── */
+function commitBatch() {
+  const { results, headerLine } = batchValidate();
+  const good = results.filter(r => r.ok);
+  const bad  = results.filter(r => !r.ok);
+  if (!good.length) { alert('Nothing to add — fix the highlighted entries first.'); return; }
+
+  const d = load();
+  good.forEach(r => d.trades.push(r.trade));
+  save(d);
+  _lastBatchIds = good.map(r => r.trade.id);
+
+  // Clear what was imported, leaving any problem entries behind to fix
+  if (batchMode === 'paste') {
+    const keep = bad.map(r => r.src._line);
+    document.getElementById('bt-paste').value =
+      keep.length ? [headerLine, ...keep].filter(Boolean).join('\n') : '';
+  } else {
+    good.forEach(r => r.src._el?.remove());
+    if (!document.querySelectorAll('#bt-rows .batch-row').length) batchAddRow(1);
+    renumberBatchRows();
+  }
+
+  renderActive(); updateStats();
+  document.getElementById('bt-preview').innerHTML = '';
+  document.getElementById('bt-commit').style.display = 'none';
+  renderBatchDone(good.length, bad.length);
+}
+
+function renderBatchDone(added, remaining) {
+  document.getElementById('bt-done-banner').innerHTML = `
+    <div class="bt-done">
+      <div class="bt-done-txt">✓ Added ${added} historic trade${added === 1 ? '' : 's'}.${
+        remaining ? ` ${remaining} entr${remaining === 1 ? 'y' : 'ies'} still need fixing.` : ''}</div>
+      <button class="br-btn" onclick="undoLastBatch()">Undo</button>
+    </div>`;
+}
+
+function undoLastBatch() {
+  if (!_lastBatchIds.length) return;
+  const ids = new Set(_lastBatchIds);
+  const d   = load();
+  d.trades  = d.trades.filter(t => !ids.has(t.id));
+  save(d);
+  _lastBatchIds = [];
+  renderActive(); updateStats();
+  document.getElementById('bt-done-banner').innerHTML =
+    `<div class="info-box">Batch undone — those trades were removed again.</div>`;
+}
+
+/* ═══════════════════════════════════════
    ROLL
 ═══════════════════════════════════════ */
 function openRoll(id) {
@@ -1714,9 +2204,12 @@ function checkAllHandled() {
   }
 }
 
-// Close overlays on background tap
+// Close overlays on background tap — except those marked data-keep-open,
+// where a stray tap would throw away everything typed in
 document.querySelectorAll('.overlay, .confirm-overlay').forEach(el => {
-  el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); });
+  el.addEventListener('click', e => {
+    if (e.target === el && !el.hasAttribute('data-keep-open')) el.classList.remove('open');
+  });
 });
 
 // Uppercase ticker inputs
