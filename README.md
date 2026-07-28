@@ -16,6 +16,8 @@ in your browser's localStorage; nothing is sent to a server.
   trades side by side.
 - **Scan** — OCR brokerage screenshots (Tesseract.js, in-browser) into pre-filled
   trade cards for review before saving.
+- **Batch entry** — bulk-enter historic trades that were never logged, either as
+  quick rows or pasted straight from a spreadsheet. See below.
 - **Backup** — export/import JSON backups (validated on import), Excel export
   (SheetJS), and a reminder banner when your last backup is over 30 days old.
 
@@ -33,6 +35,35 @@ each trade counts by the dollars it committed for the days it was open:
 ```
 ROI% = 365 × Σ profit / Σ (strike × 100 × contracts × days open) × 100
 ```
+
+## Batch entry (historic trades)
+
+*Scan → Historic Trades → Batch Entry*, or the link at the bottom of the New Trade
+sheet. Two ways in, both ending at the same preview → confirm step:
+
+- **Quick rows** — one card per trade; each new row inherits the previous row's
+  dates so a batch from the same period is quick to fill.
+- **Paste / CSV** — one trade per line, comma- or tab-separated, so a spreadsheet
+  selection can be pasted directly. A `.csv` file can be loaded instead.
+
+Columns, in positional order:
+
+```
+Ticker, Type, Strike, Premium, Contracts, Opened, Expiry, Outcome, Close Price, Close Date
+```
+
+A header row is optional; when present, columns may appear in any order and common
+aliases are recognised (`Symbol`, `Credit`, `Quantity`, `Expiration`, `Buy Price`, …).
+Dates read as `2026-02-20`, `2/20/2026` (US order) or `Feb 20 2026`. `Outcome` is
+`active`, `expired` (assignment counts here — the premium is kept either way) or
+`closed`; leave it blank and it is inferred from whether the expiration has passed.
+Close price and close date apply only to positions bought back early.
+
+Everything is derived from the dates entered rather than from today, so DTE, ROI,
+days held and P&L land the same as if the trade had been tracked live. The preview
+lists each entry with its computed P&L and ROI, flags unusable rows with the reason,
+and imports only the valid ones — problem entries stay behind to be fixed. A single
+**Undo** removes the whole batch just committed.
 
 ## Files
 
