@@ -9,10 +9,17 @@ in your browser's localStorage; nothing is sent to a server.
 - **Portfolio** — active positions with strike, premium, contracts, live days-to-expiry
   (highlighted red when ≤ 5 days), income, and annualized ROI. The headline realized
   P&L figure is **year to date**, with the all-time total on the line beneath it.
-- **Roll tracking** — roll a position to a new strike/expiration; premiums and DTE
-  accumulate and the full roll history stays on the card.
-- **History & Analysis** — realized P&L, capital-weighted annualized ROI, and
-  month-by-month performance.
+  Each card carries the buy-back price below which closing now beats holding.
+- **The wheel** — assignment creates a share lot; covered calls written against it
+  lower its basis; called away or sold closes the cycle. See below.
+- **Decision support** — close-early breakeven per position, roll-vs-close verdict,
+  capital efficiency ranking, and concentration/assignment risk.
+- **Roll tracking** — roll a position to a new strike/expiration; premiums accumulate,
+  the full roll history stays on the card, and the roll sheet says whether the new leg
+  alone beats your realized average.
+- **History & Analysis** — realized P&L, capital-weighted annualized ROI, win rate,
+  average holding period, month-by-month performance, and breakdowns by term
+  written, ticker and type.
 - **ROI Calculator** — single-leg calculator plus a VS mode to compare two candidate
   trades side by side.
 - **Scan** — OCR brokerage screenshots (Tesseract.js, in-browser) into pre-filled
@@ -22,6 +29,25 @@ in your browser's localStorage; nothing is sent to a server.
 - **Backup** — export/import JSON backups (validated on import), Excel export
   (SheetJS), and a reminder banner when your last backup is over 30 days old.
 - **Offline** — installable and fully usable with no connection. See below.
+- **Expiry reminders** — an opt-in notification when something is within 5 days of
+  expiring, raised when you open or return to the app.
+
+## The wheel
+
+Selling a put and being assigned is not the end of the trade — it is the middle of
+one. The app models the whole cycle:
+
+1. **Sell a put.** Capital committed is `strike × 100 × contracts`.
+2. **Assigned** (the *Assign* action). The option keeps its premium and a **share
+   lot** takes over the capital, at the strike you were put.
+3. **Sell calls against the lot.** A call linked to a lot is measured against what
+   those shares cost, and adds no capital of its own — the lot already carries it.
+4. **Called away or sold.** The lot closes and the cycle's return is settled.
+
+A lot always shows its **net basis** — cost less every premium the lot has earned —
+which is the price the stock has to reach for the cycle to break even. Premiums stay
+counted on the option legs and the lot carries only the stock gain or loss, so
+nothing is counted twice.
 
 ## ROI formula
 
@@ -32,11 +58,52 @@ ROI% = (365 / DTE) × (premium / strike) × 100
 ```
 
 Aggregate ROI (history, analysis, weighted averages) is **capital-day weighted**:
-each trade counts by the dollars it committed for the days it was open:
+each trade counts by the dollars it committed for the days it was actually open:
 
 ```
-ROI% = 365 × Σ profit / Σ (strike × 100 × contracts × days open) × 100
+ROI% = 365 × Σ profit / Σ (capital × days held) × 100
 ```
+
+Three things this gets right that are easy to get wrong:
+
+- **Days held is measured, not summed.** A roll's term starts on the roll date, so
+  adding the terms together double-counts the unexpired remainder of the old
+  contract — a 35-day put rolled with 5 days left into a 30-day contract ran for 60
+  days, not 65. Days are always the calendar span from open to close.
+- **Covered calls do not commit their own capital.** The shares do. Counting both
+  the lot and the call written against it would double the denominator and halve
+  the measured return.
+- **Share lots are measured the same way as options**, so a wheel cycle and a plain
+  put are directly comparable.
+
+## Close-early breakeven
+
+Holding to expiry earns the remaining premium at a steady pace. Closing early ends
+the trade sooner and frees the capital, so the same premium is earned over fewer
+days. The two break even at:
+
+```
+buy-back price = total premium × (days remaining / total span)
+```
+
+Below that price, closing now annualizes better than holding — the general form of
+the "take profit at 50%" rule, computed from your actual dates. Every open position
+shows its own threshold.
+
+## Analysis
+
+Beyond month-by-month totals, the Analysis tab answers what actually works and what
+is actually at risk:
+
+- **Win rate and average holding period** alongside realized P&L and monthly ROI.
+- **Breakdowns** by term written (0–7d / 8–21d / 22–45d / 46d+), by ticker, and by
+  type — each with win rate, P&L and capital-weighted annualized ROI, so patterns
+  like "45-day trades beat weeklies" become visible.
+- **Concentration** — capital at risk per ticker, with a warning when one name is
+  40% or more of the book.
+- **Assignment obligation** — the cash needed if every open put is assigned.
+- **Capital efficiency** — open positions ranked by annualized return, weakest
+  flagged, which is the one to close or roll first.
 
 ## Number formatting
 
@@ -98,9 +165,10 @@ Ticker, Type, Strike, Premium, Contracts, Opened, Expiry, Outcome, Close Price, 
 A header row is optional; when present, columns may appear in any order and common
 aliases are recognised (`Symbol`, `Credit`, `Quantity`, `Expiration`, `Buy Price`, …).
 Dates read as `2026-02-20`, `2/20/2026` (US order) or `Feb 20 2026`. `Outcome` is
-`active`, `expired` (assignment counts here — the premium is kept either way) or
-`closed`; leave it blank and it is inferred from whether the expiration has passed.
-Close price and close date apply only to positions bought back early.
+`active`, `expired`, `assigned` or `closed`; leave it blank and it is inferred from
+whether the expiration has passed. An assigned put also creates the share lot it
+handed you, so an old wheel cycle can be closed out from the portfolio. Close price
+and close date apply only to positions bought back early.
 
 Everything is derived from the dates entered rather than from today, so DTE, ROI,
 days held and P&L land the same as if the trade had been tracked live. The preview

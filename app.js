@@ -45,6 +45,18 @@ const fmtPct    = v => fmtNum(v) + '%';
 const fmtInt    = v => Math.round(numOr0(v)).toLocaleString('en-US');
 
 /* ═══════════════════════════════════════
+   DATE HELPERS
+═══════════════════════════════════════ */
+// Whole days from a to b (negative when b precedes a)
+function daysBetween(aISO, bISO) {
+  return Math.round((new Date(bISO + 'T00:00:00') - new Date(aISO + 'T00:00:00')) / 86400000);
+}
+const dateOffset = n => {
+  const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() + n);
+  return d.toISOString().split('T')[0];
+};
+
+/* ═══════════════════════════════════════
    CALCULATIONS
 ═══════════════════════════════════════ */
 // ROI% = (365/DTE) × (premium×100 / strike) — which equals (365/DTE)×(premium/strike)×100
@@ -56,7 +68,11 @@ function roiPct(premPerShare, strike, dte) {
 function totalPremiums(t) {
   return t.premium + (t.rolls||[]).reduce((s,r) => s + r.premium, 0);
 }
-function totalDTE(t) {
+// Sum of the contract terms written. NOT the days the capital was tied up —
+// a roll's term starts on the roll date, so the unexpired remainder of the
+// old contract is inside both terms. Use actualDays() for anything
+// annualized; this is only for showing how much time was bought in total.
+function termDaysWritten(t) {
   return t.dteAtExecution + (t.rolls||[]).reduce((s,r) => s + r.dte, 0);
 }
 function currentStrike(t) {
@@ -84,43 +100,129 @@ function daysRemaining(t) {
   const today0 = new Date(); today0.setHours(0,0,0,0);
   return Math.ceil((exp - today0) / 86400000);
 }
+// An option leg keeps its premium whether it expires worthless or is
+// assigned. When it is assigned the share side of the trade moves into a
+// position (see below) — that is where the stock gain or loss lives, so
+// counting it here too would double it.
 function tradePnL(t) {
   const q = tradeQty(t);
-  if (t.status === 'expired')      return totalPremiums(t) * 100 * q;
+  if (t.status === 'expired' || t.status === 'assigned') return totalPremiums(t) * 100 * q;
   if (t.status === 'closed_early') return (totalPremiums(t) - (t.closeInfo?.buyingPrice||0)) * 100 * q;
   return 0;
 }
+
+// The day a position stopped tying up capital
+function tradeEndDate(t) {
+  if (t.status !== 'active' && t.closeInfo?.dateClosed) return t.closeInfo.dateClosed;
+  return currentExpDate(t);
+}
+// Calendar days the capital was actually committed: open date → the day it
+// ended. Measured, not summed, so rolling does not inflate it.
 function actualDays(t) {
-  if (t.status === 'closed_early' && t.closeInfo?.dateClosed) {
-    const d = Math.ceil((new Date(t.closeInfo.dateClosed) - new Date(t.dateOpened)) / 86400000);
-    return d > 0 ? d : 1;
-  }
-  return totalDTE(t);
+  return Math.max(1, daysBetween(t.dateOpened, tradeEndDate(t)));
 }
 
-// Annualized return weighted by capital-days: each trade counts by the
-// dollars it committed (strike × 100 × qty) for the days it was open.
+// Dollars a trade ties up. A cash-secured put pledges strike × 100 × qty.
+// A covered call written against shares you already hold adds no capital of
+// its own — the share lot carries it, and counting both would halve the
+// return on that capital. An uncovered call falls back to its strike.
+function tradeCapital(t) {
+  if (t.type === 'call' && t.positionId) return 0;
+  return currentStrike(t) * 100 * tradeQty(t);
+}
+
+/* ── Share positions (the wheel) ──
+   A put assignment hands you shares. Those shares tie up capital until
+   they are called away or sold, and every premium collected along the way
+   lowers what they effectively cost. Premiums stay counted on the option
+   legs; a position carries only the stock gain or loss, so nothing is
+   counted twice. */
+const loadPositions = d => (d || load()).positions || [];
+
+// Premiums collected by the put that created the lot plus every call
+// written against it. Derived rather than stored, so it cannot drift.
+function positionPremiums(p, trades) {
+  return (trades || load().trades)
+    .filter(t => t.positionId === p.id || t.id === p.sourceTradeId)
+    .reduce((s, t) => s + totalPremiums(t) * 100 * tradeQty(t), 0);
+}
+// What the shares really cost you once premiums are netted off — the price
+// the stock has to reach for the whole cycle to break even.
+function positionNetBasis(p, trades) {
+  return p.shares > 0 ? p.costBasis - positionPremiums(p, trades) / p.shares : p.costBasis;
+}
+// Stock side only; premiums are already counted on the option legs
+function positionStockPnL(p) {
+  if (p.status !== 'closed') return 0;
+  return ((p.closeInfo?.pricePerShare || 0) - p.costBasis) * p.shares;
+}
+function positionCapital(p) { return p.costBasis * p.shares; }
+function positionDays(p) {
+  const end = p.status === 'closed' ? (p.closeInfo?.dateClosed || todayStr()) : todayStr();
+  return Math.max(1, daysBetween(p.dateAcquired, end));
+}
+// Whole-cycle profit: the stock move plus every premium the lot earned
+function positionCyclePnL(p, trades) {
+  return positionStockPnL(p) + positionPremiums(p, trades);
+}
+
+/* ── Realized performance ──
+   Options and share lots are measured the same way — profit over the
+   capital-days that produced it — so they can be pooled into one number. */
+function realizedItems(d) {
+  d = d || load();
+  const items = d.trades.filter(t => t.status !== 'active').map(t => ({
+    kind: 'option', ref: t, ticker: t.ticker,
+    pnl: tradePnL(t), capital: tradeCapital(t), days: actualDays(t),
+    date: t.closeInfo?.dateClosed || t.dateOpened
+  }));
+  loadPositions(d).filter(p => p.status === 'closed').forEach(p => items.push({
+    kind: 'shares', ref: p, ticker: p.ticker,
+    pnl: positionStockPnL(p), capital: positionCapital(p), days: positionDays(p),
+    date: p.closeInfo?.dateClosed || p.dateAcquired
+  }));
+  return items;
+}
+
+function itemsROI(items) {
+  const pnl     = items.reduce((s,i) => s + i.pnl, 0);
+  const capDays = items.reduce((s,i) => s + i.capital * i.days, 0);
+  return capDays > 0 ? (pnl / capDays) * 365 * 100 : 0;
+}
+
+// Annualized return weighted by capital-days, for a plain list of trades
 function annualizedROI(trades) {
-  const profit  = trades.reduce((s,t) => s + tradePnL(t), 0);
-  const capDays = trades.reduce((s,t) => s + currentStrike(t) * 100 * tradeQty(t) * actualDays(t), 0);
-  return capDays > 0 ? (profit / capDays) * 365 * 100 : 0;
+  return itemsROI(trades.map(t => ({
+    pnl: tradePnL(t), capital: tradeCapital(t), days: actualDays(t)
+  })));
 }
 
-// Realized P&L booked in the current calendar year — a trade counts in the
-// year it closed (falling back to when it was opened for legacy records).
-function ytdPnL(closedTrades) {
+// Realized P&L booked in the current calendar year — counted in the year
+// the position closed (falling back to when it opened for legacy records).
+function ytdPnL(items) {
   const yr = String(new Date().getFullYear());
-  return closedTrades
-    .filter(t => String(t.closeInfo?.dateClosed || t.dateOpened || '').slice(0, 4) === yr)
-    .reduce((s, t) => s + tradePnL(t), 0);
+  return items
+    .filter(i => String(i.date || '').slice(0, 4) === yr)
+    .reduce((s, i) => s + i.pnl, 0);
 }
 
 function weightedStats() {
-  const closed = load().trades.filter(t => t.status !== 'active');
-  if (!closed.length) return { roi:0, monthly:0, pnl:0 };
-  const pnl = closed.reduce((s,t) => s + tradePnL(t), 0);
-  const roi = annualizedROI(closed);
+  const items = realizedItems();
+  if (!items.length) return { roi:0, monthly:0, pnl:0 };
+  const pnl = items.reduce((s,i) => s + i.pnl, 0);
+  const roi = itemsROI(items);
   return { roi, monthly: roi / 12, pnl };
+}
+
+/* ── Decision support ──
+   Holding to expiry earns the remaining premium at a fixed pace. Closing
+   now ends the trade early and frees the capital, so the same premium is
+   earned over fewer days. Below this buy-back price, closing now beats
+   holding on an annualized basis:  breakeven = premium × remaining/span. */
+function closeEarlyBreakeven(t) {
+  const span = Math.max(1, daysBetween(t.dateOpened, currentExpDate(t)));
+  const left = Math.max(0, daysBetween(todayStr(), currentExpDate(t)));
+  return { price: totalPremiums(t) * (left / span), span, left, elapsed: span - left };
 }
 
 /* ═══════════════════════════════════════
@@ -209,6 +311,7 @@ function openAddModal(prefill) {
   document.getElementById('a-strike').value  = prefill?.strike  || '';
   document.getElementById('a-premium').value = prefill?.premium || '';
   document.getElementById('a-qty').value     = prefill?.qty     || 1;
+  renderCoversOptions(prefill?.positionId || '');
   // Accept prefill as DTE number or expiration date string
   const dte = prefill?.dte || '';
   document.getElementById('a-dte').value     = dte;
@@ -218,7 +321,25 @@ function openAddModal(prefill) {
   openOverlay('m-add');
 }
 
-function setAddType(t) { addType = t; setTypeBtn('a', t); addROIUpdate(); }
+function setAddType(t) { addType = t; setTypeBtn('a', t); renderCoversOptions(); addROIUpdate(); }
+
+/* Covered calls can be tied to a share lot. Offer the open lots for the
+   ticker being entered; a linked call is measured against what those
+   shares cost rather than against its own strike. */
+function renderCoversOptions(preselect) {
+  const wrap = document.getElementById('a-covers-wrap');
+  const sel  = document.getElementById('a-covers');
+  if (!wrap || !sel) return;
+  const keep   = preselect !== undefined ? preselect : sel.value;
+  const ticker = (document.getElementById('a-ticker').value || '').trim().toUpperCase();
+  const open   = loadPositions().filter(p => p.status === 'open' && (!ticker || p.ticker === ticker));
+  if (addType !== 'call' || !open.length) { wrap.style.display = 'none'; sel.innerHTML = ''; return; }
+  sel.innerHTML = '<option value="">— not covered —</option>' + open.map(p =>
+    `<option value="${esc(p.id)}">${esc(p.ticker)} · ${fmtInt(p.shares)} shares at ${fmtMoney(p.costBasis)}</option>`
+  ).join('');
+  sel.value = keep && open.some(p => p.id === keep) ? keep : '';
+  wrap.style.display = 'block';
+}
 function setCalcType(t) { calcTypeVal = t; setTypeBtn('c', t); }
 function setTypeBtn(pfx, t) {
   document.getElementById(pfx+'-t-put').className  = 'tgl-btn' + (t==='put'  ? ' t-put'  : '');
@@ -250,11 +371,14 @@ function addTrade() {
   if (!TICKER_RE.test(ticker)) { alert('Ticker must be 1–6 letters (A–Z)'); return; }
   const expDate = document.getElementById('a-expdate').value || dateFromDTE(dte);
   const d = load();
+  const positionId = addType === 'call'
+    ? (document.getElementById('a-covers')?.value || null) : null;
   d.trades.push({
     id: uid(), ticker, strikePrice: strike, premium, qty,
     type: addType, dteAtExecution: dte, expDate,
     roiAtExecution: roiPct(premium, strike, dte),
-    dateOpened: todayStr(), status: 'active', rolls: [], closeInfo: null
+    dateOpened: todayStr(), status: 'active', rolls: [], closeInfo: null,
+    ...(positionId ? { positionId } : {})
   });
   save(d);
   closeOverlay('m-add');
@@ -273,16 +397,7 @@ function addTrade() {
 let batchMode     = 'rows';
 let _batchSeq     = 0;
 let _lastBatchIds = [];
-
-const dateOffset = n => {
-  const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() + n);
-  return d.toISOString().split('T')[0];
-};
-
-// Whole days from a to b (negative when b precedes a)
-function daysBetween(aISO, bISO) {
-  return Math.round((new Date(bISO + 'T00:00:00') - new Date(aISO + 'T00:00:00')) / 86400000);
-}
+let _lastBatchPosIds = [];
 
 const BATCH_MONTHS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
 
@@ -324,7 +439,8 @@ function normBatchStatus(v, expiry, today) {
   const s = String(v ?? '').trim().toLowerCase().replace(/[^a-z]/g, '');
   if (!s || s === 'auto') return expiry ? (expiry < today ? 'expired' : 'active') : null;
   if (/^(active|open|ongoing|current|live|running|a|o)$/.test(s))                       return 'active';
-  if (/^(expired|expire|exp|expiredworthless|worthless|assigned|assign|exercised|e)$/.test(s)) return 'expired';
+  if (/^(expired|expire|exp|expiredworthless|worthless|e)$/.test(s))                   return 'expired';
+  if (/^(assigned|assign|exercised|exercise|puttome|calledaway)$/.test(s))              return 'assigned';
   if (/^(closed|close|closedearly|boughtback|buyback|bought|btc|c)$/.test(s))           return 'closed_early';
   return null;
 }
@@ -584,13 +700,14 @@ function normalizeBatchRow(raw) {
 
   const rawStatus = String(raw.status || '').trim();
   const status    = normBatchStatus(rawStatus, expiry, today);
-  if (!status) errors.push(rawStatus ? `outcome "${rawStatus}" not understood — use active, expired or closed` : 'outcome missing');
-  if (/^(assign|exercis)/i.test(rawStatus.replace(/[^a-z]/gi, '')))
-    notes.push('recorded as expired — the full premium is kept either way');
+  if (!status) errors.push(rawStatus ? `outcome "${rawStatus}" not understood — use active, expired, assigned or closed` : 'outcome missing');
+  if (status === 'assigned' && type === 'put')
+    notes.push('a share lot will be created at the strike — sell or close it from the portfolio');
 
   let closeInfo = null;
-  if (status === 'expired') {
-    if (expiry && expiry > today) errors.push('marked expired but the expiration is still in the future');
+  if (status === 'expired' || status === 'assigned') {
+    if (expiry && expiry > today)
+      errors.push(`marked ${status === 'assigned' ? 'assigned' : 'expired'} but the expiration is still in the future`);
     if (expiry) closeInfo = { dateClosed: expiry };
   } else if (status === 'closed_early') {
     const buy = num(raw.closePrice);
@@ -709,9 +826,26 @@ function commitBatch() {
   if (!good.length) { alert('Nothing to add — fix the highlighted entries first.'); return; }
 
   const d = load();
-  good.forEach(r => d.trades.push(r.trade));
+  d.positions = loadPositions(d);
+  const posIds = [];
+  good.forEach(r => {
+    const t = r.trade;
+    d.trades.push(t);
+    // An assigned put historically handed over shares — create the lot so the
+    // cycle can be closed out (or sold) from the portfolio.
+    if (t.status === 'assigned' && t.type === 'put') {
+      const p = {
+        id: uid(), ticker: t.ticker, shares: tradeQty(t) * 100,
+        costBasis: currentStrike(t), dateAcquired: t.closeInfo?.dateClosed || t.expDate,
+        sourceTradeId: t.id, status: 'open', closeInfo: null
+      };
+      d.positions.push(p);
+      posIds.push(p.id);
+    }
+  });
   save(d);
   _lastBatchIds = good.map(r => r.trade.id);
+  _lastBatchPosIds = posIds;
 
   // Clear what was imported, leaving any problem entries behind to fix
   if (batchMode === 'paste') {
@@ -741,11 +875,13 @@ function renderBatchDone(added, remaining) {
 
 function undoLastBatch() {
   if (!_lastBatchIds.length) return;
-  const ids = new Set(_lastBatchIds);
-  const d   = load();
-  d.trades  = d.trades.filter(t => !ids.has(t.id));
+  const ids    = new Set(_lastBatchIds);
+  const posIds = new Set(_lastBatchPosIds);
+  const d      = load();
+  d.trades     = d.trades.filter(t => !ids.has(t.id));
+  d.positions  = loadPositions(d).filter(p => !posIds.has(p.id));
   save(d);
-  _lastBatchIds = [];
+  _lastBatchIds = []; _lastBatchPosIds = [];
   renderActive(); updateStats();
   document.getElementById('bt-done-banner').innerHTML =
     `<div class="info-box">Batch undone — those trades were removed again.</div>`;
@@ -765,7 +901,7 @@ function openRoll(id) {
   document.getElementById('r-roi-val').textContent = '—';
   document.getElementById('r-info').innerHTML =
     `<b>${esc(t.ticker)}</b> ${esc(t.type.toUpperCase())}${tradeQty(t)>1?' ×'+fmtInt(tradeQty(t)):''} &nbsp;|&nbsp; Current strike: <b>${fmtMoney(currentStrike(t))}</b><br>
-     Premiums so far: <b>${fmtMoney(totalPremiums(t))}</b> &nbsp;|&nbsp; Total DTE: <b>${fmtInt(totalDTE(t))}d</b>`;
+     Premiums so far: <b>${fmtMoney(totalPremiums(t))}</b> &nbsp;|&nbsp; Open: <b>${fmtInt(daysBetween(t.dateOpened, todayStr()))}d</b>`;
   openOverlay('m-roll');
 }
 
@@ -776,14 +912,33 @@ function rollROIUpdate() {
   const np = parseFloat(document.getElementById('r-premium').value);
   const ns = parseFloat(document.getElementById('r-strike').value);
   const nd = parseInt(document.getElementById('r-dte').value);
-  if (np && ns && nd) {
-    const tp = totalPremiums(t) + np;
-    const td = totalDTE(t) + nd;
-    const r  = roiPct(tp, ns, td);
-    document.getElementById('r-roi-val').textContent = fmtPct(r);
-    document.getElementById('r-roi-formula').textContent =
-      `(365/${fmtInt(td)}) × (${fmtMoney(tp)} / ${fmtMoney(ns)}) × 100`;
-  }
+  const verdict = document.getElementById('r-verdict');
+  if (!(np && ns && nd)) { if (verdict) verdict.style.display = 'none'; return; }
+
+  const tp = totalPremiums(t) + np;
+  const newExp = document.getElementById('r-expdate').value || dateFromDTE(nd);
+  const td = Math.max(1, daysBetween(t.dateOpened, newExp));
+  const r  = roiPct(tp, ns, td);
+  document.getElementById('r-roi-val').textContent = fmtPct(r);
+  document.getElementById('r-roi-formula').textContent =
+    `(365/${fmtInt(td)}) × (${fmtMoney(tp)} / ${fmtMoney(ns)}) × 100`;
+
+  /* Combined ROI flatters a roll: it credits the new leg with premium the
+     original already earned. What actually decides the roll is the new
+     money on its own — is this new leg worth the capital, compared with
+     what your closed trades have really returned? */
+  if (!verdict) return;
+  const incremental = roiPct(np, ns, nd);
+  const avg = weightedStats().roi;
+  const better = avg > 0 && incremental >= avg;
+  verdict.className = 'tc-hint' + (better || !avg ? ' good' : '');
+  verdict.style.display = 'block';
+  verdict.innerHTML = avg
+    ? `The new leg on its own annualizes at <b>${fmtPct(incremental)}</b> —
+       ${better ? 'better than' : 'below'} your realized average of <b>${fmtPct(avg)}</b>.
+       ${better ? '' : 'Closing instead frees ' + fmtMoney(ns * 100 * tradeQty(t)) + ' to redeploy.'}`
+    : `The new leg on its own annualizes at <b>${fmtPct(incremental)}</b> on
+       ${fmtMoney(ns * 100 * tradeQty(t))} of capital for ${fmtInt(nd)} days.`;
 }
 
 function executeRoll() {
@@ -883,6 +1038,246 @@ function confirmExpire() {
 }
 
 /* ═══════════════════════════════════════
+   TOAST — undo for anything destructive
+═══════════════════════════════════════ */
+let _toastAction = null, _toastTimer = null;
+
+function showToast(text, actionLabel, fn, ms = 9000) {
+  const el = document.getElementById('toast');
+  if (!el) return;
+  document.getElementById('toast-txt').textContent = text;
+  const btn = document.getElementById('toast-btn');
+  btn.textContent = actionLabel || 'Undo';
+  btn.style.display = fn ? 'block' : 'none';
+  _toastAction = fn || null;
+  el.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(hideToast, ms);
+}
+function hideToast() {
+  document.getElementById('toast')?.classList.remove('show');
+  _toastAction = null;
+}
+function toastAction() {
+  const fn = _toastAction;
+  hideToast();
+  if (fn) fn();
+}
+
+/* ═══════════════════════════════════════
+   ASSIGNMENT & SHARE POSITIONS (the wheel)
+   Assigning a put hands you shares: the option leg keeps its premium and
+   a share lot takes over the capital. Assigning a covered call sells that
+   lot back out. Tracking both ends means the cycle — not just the leg —
+   can be measured.
+═══════════════════════════════════════ */
+function openAssign(id) {
+  const d = load();
+  const t = d.trades.find(x => x.id === id);
+  if (!t) return;
+  const q  = tradeQty(t);
+  const cs = currentStrike(t);
+  document.getElementById('as-id').value   = id;
+  document.getElementById('as-date').value = todayStr();
+
+  if (t.type === 'put') {
+    document.getElementById('as-title').textContent = 'Put Assigned';
+    document.getElementById('as-info').innerHTML =
+      `<b>${esc(t.ticker)}</b> PUT${q>1?' ×'+fmtInt(q):''} at <b>${fmtMoney(cs)}</b><br>
+       You buy <b>${fmtInt(q*100)}</b> shares for <b>${fmtMoney(cs*100*q)}</b>. The
+       ${fmtMoney(totalPremiums(t)*100*q)} premium stays yours and comes off what the shares cost.`;
+    document.getElementById('as-prev-label').textContent = 'Net Cost / Share';
+  } else {
+    const p = loadPositions(d).find(p => p.id === t.positionId && p.status === 'open');
+    document.getElementById('as-title').textContent = 'Call Assigned';
+    document.getElementById('as-info').innerHTML = p
+      ? `<b>${esc(t.ticker)}</b> CALL${q>1?' ×'+fmtInt(q):''} at <b>${fmtMoney(cs)}</b><br>
+         Your <b>${fmtInt(p.shares)}</b> shares are called away for <b>${fmtMoney(cs*p.shares)}</b>,
+         closing the lot bought at ${fmtMoney(p.costBasis)}.`
+      : `<b>${esc(t.ticker)}</b> CALL${q>1?' ×'+fmtInt(q):''} at <b>${fmtMoney(cs)}</b><br>
+         No share lot is linked to this call, so only the option leg is recorded —
+         the premium is kept in full.`;
+    document.getElementById('as-prev-label').textContent = p ? 'Cycle P&L' : 'Premium Kept';
+  }
+  assignUpdate();
+  openOverlay('m-assign');
+}
+
+function assignUpdate() {
+  const d = load();
+  const t = d.trades.find(x => x.id === document.getElementById('as-id').value);
+  if (!t) return;
+  const q    = tradeQty(t);
+  const cs   = currentStrike(t);
+  const when = document.getElementById('as-date').value || todayStr();
+  const val  = document.getElementById('as-prev-val');
+  const sub  = document.getElementById('as-prev-sub');
+
+  if (t.type === 'put') {
+    const net = cs - totalPremiums(t);
+    val.textContent = fmtMoney(net);
+    val.style.color = 'var(--blue)';
+    sub.textContent = `${fmtMoney(cs)} strike − ${fmtMoney(totalPremiums(t))} premium · ${fmtInt(q*100)} shares`;
+  } else {
+    const p = loadPositions(d).find(p => p.id === t.positionId && p.status === 'open');
+    if (p) {
+      const stock = (cs - p.costBasis) * p.shares;
+      // The call is already linked to the lot, so positionPremiums() counts
+      // it — adding it again here would double the premium side.
+      const prem  = positionPremiums(p, d.trades);
+      const days  = Math.max(1, daysBetween(p.dateAcquired, when));
+      const cycle = stock + prem;
+      val.textContent = fmtSigned(cycle);
+      val.style.color = cycle >= 0 ? 'var(--green)' : 'var(--red)';
+      sub.textContent = `${fmtSigned(stock)} stock + ${fmtMoney(prem)} premiums · ${fmtInt(days)}d`;
+    } else {
+      val.textContent = fmtSigned(totalPremiums(t) * 100 * q);
+      val.style.color = 'var(--green)';
+      sub.textContent = `${fmtMoney(totalPremiums(t))} × 100${q>1?' × '+fmtInt(q):''}`;
+    }
+  }
+}
+
+function confirmAssign() {
+  const id   = document.getElementById('as-id').value;
+  const when = document.getElementById('as-date').value || todayStr();
+  const d    = load();
+  const t    = d.trades.find(x => x.id === id);
+  if (!t) return;
+  if (!DATE_RE.test(when)) { alert('Enter the assignment date'); return; }
+  if (daysBetween(t.dateOpened, when) < 0) { alert('Assignment cannot pre-date the trade'); return; }
+
+  const q  = tradeQty(t);
+  const cs = currentStrike(t);
+  d.positions = d.positions || [];
+  let msg;
+
+  if (t.type === 'put') {
+    d.positions.push({
+      id: uid(), ticker: t.ticker, shares: q * 100, costBasis: cs,
+      dateAcquired: when, sourceTradeId: t.id, status: 'open', closeInfo: null
+    });
+    msg = `${t.ticker}: ${fmtInt(q*100)} shares acquired at ${fmtMoney(cs)}`;
+  } else {
+    const p = d.positions.find(p => p.id === t.positionId && p.status === 'open');
+    if (p) {
+      p.status = 'closed';
+      p.closeInfo = { pricePerShare: cs, dateClosed: when, reason: 'called_away' };
+      msg = `${t.ticker}: ${fmtInt(p.shares)} shares called away at ${fmtMoney(cs)}`;
+    } else {
+      msg = `${t.ticker} call assigned`;
+    }
+  }
+  t.status    = 'assigned';
+  t.closeInfo = { dateClosed: when };
+  save(d);
+  closeOverlay('m-assign');
+  renderActive(); updateStats();
+  showToast(msg, null, null, 5000);
+}
+
+/* ── Writing a call against a lot ── */
+function openSellCall(posId) {
+  const p = loadPositions().find(p => p.id === posId);
+  if (!p) return;
+  openAddModal({ ticker: p.ticker, type: 'call', qty: Math.max(1, Math.floor(p.shares / 100)),
+                 strike: p.costBasis, positionId: p.id });
+}
+
+/* ── Selling a lot outright ── */
+function openClosePos(id) {
+  const d = load();
+  const p = loadPositions(d).find(p => p.id === id);
+  if (!p) return;
+  document.getElementById('cp-id').value    = id;
+  document.getElementById('cp-price').value = '';
+  document.getElementById('cp-date').value  = todayStr();
+  document.getElementById('cp-pnl').textContent = '—';
+  document.getElementById('cp-roi').textContent = '—';
+  const prem = positionPremiums(p, d.trades);
+  document.getElementById('cp-info').innerHTML =
+    `<b>${esc(p.ticker)}</b> — <b>${fmtInt(p.shares)}</b> shares at <b>${fmtMoney(p.costBasis)}</b>
+     since ${esc(p.dateAcquired)}<br>
+     Premiums collected: <b>${fmtMoney(prem)}</b> &nbsp;|&nbsp;
+     Net basis: <b>${fmtMoney(positionNetBasis(p, d.trades))}</b> / share`;
+  const open = d.trades.filter(t => t.positionId === p.id && t.status === 'active');
+  if (open.length) {
+    document.getElementById('cp-info').innerHTML +=
+      `<br><span style="color:var(--amber)">⚠ ${fmtInt(open.length)} open call${open.length>1?'s':''}
+       written against this lot — settle ${open.length>1?'them':'it'} too.</span>`;
+  }
+  openOverlay('m-closepos');
+}
+
+function closePosUpdate() {
+  const d = load();
+  const p = loadPositions(d).find(p => p.id === document.getElementById('cp-id').value);
+  if (!p) return;
+  const price = parseFloat(document.getElementById('cp-price').value);
+  if (isNaN(price)) return;
+  const when  = document.getElementById('cp-date').value || todayStr();
+  const stock = (price - p.costBasis) * p.shares;
+  const prem  = positionPremiums(p, d.trades);
+  const cycle = stock + prem;
+  const days  = Math.max(1, daysBetween(p.dateAcquired, when));
+  const roi   = (cycle / positionCapital(p)) * (365 / days) * 100;
+
+  const pnlEl = document.getElementById('cp-pnl');
+  pnlEl.textContent = fmtSigned(cycle);
+  pnlEl.style.color = cycle >= 0 ? 'var(--green)' : 'var(--red)';
+  document.getElementById('cp-formula').textContent =
+    `${fmtSigned(stock)} stock + ${fmtMoney(prem)} premiums`;
+  const roiEl = document.getElementById('cp-roi');
+  roiEl.textContent = fmtPct(roi);
+  roiEl.style.color = roi >= 0 ? 'var(--blue)' : 'var(--red)';
+  document.getElementById('cp-roi-formula').textContent =
+    `${fmtMoney(positionCapital(p))} held for ${fmtInt(days)}d`;
+}
+
+function confirmClosePos() {
+  const id    = document.getElementById('cp-id').value;
+  const price = parseFloat(document.getElementById('cp-price').value);
+  const when  = document.getElementById('cp-date').value || todayStr();
+  if (isNaN(price) || price < 0) { alert('Enter the sale price per share'); return; }
+  const d = load();
+  const p = loadPositions(d).find(p => p.id === id);
+  if (!p) return;
+  if (daysBetween(p.dateAcquired, when) < 0) { alert('Sale cannot pre-date the purchase'); return; }
+  p.status    = 'closed';
+  p.closeInfo = { pricePerShare: price, dateClosed: when, reason: 'sold' };
+  save(d);
+  closeOverlay('m-closepos');
+  renderActive(); updateStats();
+}
+
+function openDeletePos(id) {
+  document.getElementById('delpos-id').value = id;
+  openConfirm('cd-delpos');
+}
+function confirmDeletePos() {
+  const id = document.getElementById('delpos-id').value;
+  const d  = load();
+  const removed = loadPositions(d).find(p => p.id === id);
+  if (!removed) { closeConfirm('cd-delpos'); return; }
+  const relinked = d.trades.filter(t => t.positionId === id);
+  relinked.forEach(t => { delete t.positionId; });
+  d.positions = loadPositions(d).filter(p => p.id !== id);
+  save(d);
+  closeConfirm('cd-delpos');
+  renderActive(); updateStats();
+  showToast(`${removed.ticker} share lot removed`, 'Undo', () => {
+    const dd = load();
+    dd.positions = loadPositions(dd).concat([removed]);
+    relinked.forEach(t => {
+      const live = dd.trades.find(x => x.id === t.id);
+      if (live) live.positionId = removed.id;
+    });
+    save(dd);
+    renderActive(); updateStats();
+  });
+}
+
+/* ═══════════════════════════════════════
    DELETE
 ═══════════════════════════════════════ */
 function openDelete(id) {
@@ -892,17 +1287,27 @@ function openDelete(id) {
 function confirmDelete() {
   const id = document.getElementById('del-id').value;
   const d  = load();
-  d.trades = d.trades.filter(t => t.id !== id);
+  const idx = d.trades.findIndex(t => t.id === id);
+  if (idx < 0) { closeConfirm('cd-delete'); return; }
+  const [removed] = d.trades.splice(idx, 1);
   save(d);
   closeConfirm('cd-delete');
   renderActive(); updateStats();
+  // Deleting is the one action with no other way back — always offer undo
+  showToast(`${removed.ticker} ${removed.type.toUpperCase()} deleted`, 'Undo', () => {
+    const dd = load();
+    dd.trades.splice(Math.min(idx, dd.trades.length), 0, removed);
+    save(dd);
+    renderActive(); updateStats(); renderHistory();
+  });
 }
 
 /* ═══════════════════════════════════════
    RENDER: ACTIVE TRADES
 ═══════════════════════════════════════ */
 function renderActive() {
-  const trades = load().trades.filter(t => t.status === 'active');
+  const d = load();
+  const trades = d.trades.filter(t => t.status === 'active');
   document.getElementById('active-count').textContent = trades.length + ' position' + (trades.length !== 1 ? 's' : '');
   const el = document.getElementById('active-list');
   if (!trades.length) {
@@ -910,14 +1315,86 @@ function renderActive() {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>
       <div class="empty-txt">No active trades yet<br>Tap + to add your first position</div>
     </div>`;
-    return;
+  } else {
+    el.innerHTML = trades.map(tradeCardHTML).join('');
   }
-  el.innerHTML = trades.map(tradeCardHTML).join('');
+  renderPositions(d);
+}
+
+/* ── Share lots held ── */
+function renderPositions(d) {
+  d = d || load();
+  const open = loadPositions(d).filter(p => p.status === 'open');
+  const hdr  = document.getElementById('pos-hdr');
+  const list = document.getElementById('pos-list');
+  if (!hdr || !list) return;
+  hdr.style.display = open.length ? 'flex' : 'none';
+  document.getElementById('pos-count').textContent =
+    fmtInt(open.reduce((s,p) => s + p.shares, 0)) + ' shares';
+  list.innerHTML = open.map(p => positionCardHTML(p, d)).join('');
+}
+
+function positionCardHTML(p, d) {
+  const prem     = positionPremiums(p, d.trades);
+  const netBasis = positionNetBasis(p, d.trades);
+  const covered  = d.trades.filter(t => t.positionId === p.id && t.status === 'active');
+  const days     = positionDays(p);
+  const yieldPct = positionCapital(p) > 0
+    ? (prem / positionCapital(p)) * (365 / days) * 100 : 0;
+
+  return `<div class="pos-card" id="pc-${esc(p.id)}">
+    <div class="pc-main">
+      <div class="pc-row1">
+        <div class="pc-ticker">${esc(p.ticker)}</div>
+        <div class="tc-badges">
+          ${covered.length ? '<span class="badge bdg-covered">covered</span>' : ''}
+          <span class="badge bdg-shares">${fmtInt(p.shares)} shares</span>
+        </div>
+      </div>
+      <div class="pc-metrics">
+        <div class="metric">
+          <div class="m-label">Cost Basis</div>
+          <div class="m-val">${fmtMoney(p.costBasis)}</div>
+        </div>
+        <div class="metric">
+          <div class="m-label">Net Basis</div>
+          <div class="m-val green">${fmtMoney(netBasis)}</div>
+        </div>
+        <div class="metric">
+          <div class="m-label">Premiums</div>
+          <div class="m-val">${fmtMoney(prem)}</div>
+        </div>
+        <div class="metric">
+          <div class="m-label">Capital</div>
+          <div class="m-val">${fmtMoney(positionCapital(p))}</div>
+        </div>
+        <div class="metric">
+          <div class="m-label">Held</div>
+          <div class="m-val">${fmtInt(days)}d</div>
+        </div>
+        <div class="metric">
+          <div class="m-label">Prem. Yield</div>
+          <div class="m-val amber">${fmtPct(yieldPct)}</div>
+        </div>
+      </div>
+    </div>
+    <div class="pc-basis-note">
+      Break even at <b>${fmtMoney(netBasis)}</b> a share — ${fmtMoney(prem)} of premium has come
+      off the ${fmtMoney(p.costBasis)} you paid${covered.length ? '' : '. Writing a call against these shares keeps that falling.'}
+    </div>
+    <div class="pc-actions">
+      <button class="act-btn grn" onclick="openSellCall('${p.id}')">Sell Call</button>
+      <button class="act-btn blu" onclick="openClosePos('${p.id}')">Sell Shares</button>
+      <button class="act-btn ico" onclick="openDeletePos('${p.id}')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:14px;height:14px"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+      </button>
+    </div>
+  </div>`;
 }
 
 function tradeCardHTML(t) {
   const tp  = totalPremiums(t);
-  const td  = totalDTE(t);
+  const td  = Math.max(1, daysBetween(t.dateOpened, currentExpDate(t)));
   const cs  = currentStrike(t);
   const q   = tradeQty(t);
   const rolled = t.rolls && t.rolls.length > 0;
@@ -925,6 +1402,15 @@ function tradeCardHTML(t) {
   const dr  = daysRemaining(t);
   const drVal = dr < 0 ? 'past exp' : fmtInt(dr) + 'd';
   const drCls = dr <= 5 ? ' red' : '';
+
+  // Below the breakeven buy-back price, closing now annualizes better than
+  // holding to expiry — the single most useful call a premium seller makes.
+  const be = closeEarlyBreakeven(t);
+  const hintHTML = (be.left > 0 && be.elapsed > 0) ? `
+    <div class="tc-hint${be.elapsed / be.span >= 0.5 ? ' good' : ''}">
+      Buy back at <b>${fmtMoney(be.price)}</b> or less and closing now beats holding
+      to expiry — ${fmtInt(be.elapsed)} of ${fmtInt(be.span)} days done, ${fmtInt(be.left)} left.
+    </div>` : '';
 
   const rollHistHTML = rolled ? `
     <div class="roll-hist">
@@ -977,11 +1463,13 @@ function tradeCardHTML(t) {
         </div>
       </div>
     </div>
+    ${hintHTML}
     ${rollHistHTML}
     <div class="tc-actions">
       <button class="act-btn grn" onclick="openExpire('${t.id}')">Expired</button>
       <button class="act-btn blu" onclick="openRoll('${t.id}')">Roll</button>
       <button class="act-btn red" onclick="openClose('${t.id}')">Close</button>
+      <button class="act-btn amb" onclick="openAssign('${t.id}')">Assign</button>
       <button class="act-btn ico" onclick="openDelete('${t.id}')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:14px;height:14px"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
       </button>
@@ -999,7 +1487,7 @@ function updateStats() {
   const { roi, pnl } = weightedStats();
 
   // P&L — this year's realized total leads, all-time sits underneath
-  const ytd   = ytdPnL(closed);
+  const ytd   = ytdPnL(realizedItems(d));
   const pnlEl = document.getElementById('s-pnl-ytd');
   pnlEl.textContent = fmtSigned(ytd);
   pnlEl.className   = 'stat-value ' + (ytd > 0 ? 'pos' : ytd < 0 ? 'neg' : 'neu');
@@ -1017,10 +1505,13 @@ function updateStats() {
   }
 
   // Committed
-  const committed = active.reduce((s,t) => s + currentStrike(t)*100*tradeQty(t), 0);
+  const lots      = loadPositions(d).filter(p => p.status === 'open');
+  const committed = active.reduce((s,t) => s + tradeCapital(t), 0)
+                  + lots.reduce((s,p) => s + positionCapital(p), 0);
   document.getElementById('s-committed').textContent = fmtMoney(committed);
   document.getElementById('s-committed-sub').textContent =
-    fmtInt(active.length) + ' position' + (active.length!==1?'s':'') + ' × strike × 100 × qty';
+    fmtInt(active.length) + ' position' + (active.length!==1?'s':'')
+    + (lots.length ? ` + ${fmtInt(lots.length)} share lot${lots.length!==1?'s':''}` : '');
 
   renderBackupReminder();
 }
@@ -1052,10 +1543,7 @@ function renderBackupReminder() {
    RENDER: HISTORY
 ═══════════════════════════════════════ */
 function renderHistory() {
-  const closed = load().trades
-    .filter(t => t.status !== 'active')
-    .sort((a,b) => new Date(b.closeInfo?.dateClosed||b.dateOpened) - new Date(a.closeInfo?.dateClosed||a.dateOpened));
-
+  const items = realizedItems().sort((a,b) => new Date(b.date) - new Date(a.date));
   const { roi, monthly, pnl } = weightedStats();
 
   const hp = document.getElementById('h-pnl');
@@ -1063,59 +1551,104 @@ function renderHistory() {
   hp.className   = 'sum-val ' + (pnl>0?'green':pnl<0?'red':'');
 
   const hr = document.getElementById('h-roi');
-  hr.textContent = closed.length ? fmtPct(roi) : '—';
+  hr.textContent = items.length ? fmtPct(roi) : '—';
   hr.className   = 'sum-val ' + (roi>0?'green':roi<0?'red':'');
 
   const hm = document.getElementById('h-monthly');
-  hm.textContent = closed.length ? fmtPct(monthly) : '—';
+  hm.textContent = items.length ? fmtPct(monthly) : '—';
   hm.className   = 'sum-val amber';
 
   const el = document.getElementById('history-list');
-  if (!closed.length) {
+  if (!items.length) {
     el.innerHTML = `<div class="empty"><div class="empty-txt">No closed trades yet</div></div>`;
     return;
   }
+  el.innerHTML = items.map(i => i.kind === 'shares' ? shareHistCardHTML(i) : optionHistCardHTML(i)).join('');
+}
 
-  el.innerHTML = closed.map(t => {
-    const tp  = totalPremiums(t);
-    const cs  = currentStrike(t);
-    const ad  = actualDays(t);
-    const pnl = tradePnL(t);
-    const profPS = t.status==='expired' ? tp : tp-(t.closeInfo?.buyingPrice||0);
-    const roi = roiPct(profPS, cs, ad);
-    const rolled = t.rolls && t.rolls.length;
-    const q = tradeQty(t);
-    return `<div class="hist-card">
-      <div class="hc-row1">
-        <div>
-          <div class="hc-ticker">${esc(t.ticker)}</div>
-          <div class="hc-meta-lbl">${esc(t.type.toUpperCase())} · ${fmtMoney(cs)}${q>1?' ×'+fmtInt(q):''} · ${esc(t.dateOpened)}${t.closeInfo?.dateClosed?' → '+esc(t.closeInfo.dateClosed):''}</div>
-        </div>
-        <div>
-          <div class="hc-pnl ${pnl>=0?'green':'red'}">${fmtSigned(pnl)}</div>
-          <div class="hc-roi">${fmtPct(roi)} ROI</div>
-        </div>
+function optionHistCardHTML(i) {
+  const t   = i.ref;
+  const tp  = totalPremiums(t);
+  const cs  = currentStrike(t);
+  const ad  = i.days;
+  const pnl = i.pnl;
+  const profPS = t.status === 'closed_early' ? tp - (t.closeInfo?.buyingPrice||0) : tp;
+  const roi = roiPct(profPS, cs, ad);
+  const rolled = t.rolls && t.rolls.length;
+  const q = tradeQty(t);
+  const stateTxt = t.status === 'expired' ? 'Expired' : t.status === 'assigned' ? 'Assigned' : 'Closed';
+  const stateCls = t.status === 'expired' ? 'green' : t.status === 'assigned' ? 'blue' : 'amber';
+  return `<div class="hist-card">
+    <div class="hc-row1">
+      <div>
+        <div class="hc-ticker">${esc(t.ticker)}</div>
+        <div class="hc-meta-lbl">${esc(t.type.toUpperCase())} · ${fmtMoney(cs)}${q>1?' ×'+fmtInt(q):''} · ${esc(t.dateOpened)}${t.closeInfo?.dateClosed?' → '+esc(t.closeInfo.dateClosed):''}</div>
       </div>
-      <div class="hc-grid">
-        <div class="hc-item">
-          <div class="hc-item-lbl">Status</div>
-          <div class="hc-item-val ${t.status==='expired'?'green':'amber'}">${t.status==='expired'?'Expired':'Closed'}</div>
-        </div>
-        <div class="hc-item">
-          <div class="hc-item-lbl">Premiums</div>
-          <div class="hc-item-val">${fmtMoney(tp)}</div>
-        </div>
-        <div class="hc-item">
-          <div class="hc-item-lbl">Days</div>
-          <div class="hc-item-val">${fmtInt(ad)}d</div>
-        </div>
-        <div class="hc-item">
-          <div class="hc-item-lbl">Rolls</div>
-          <div class="hc-item-val">${rolled ? rolled+'×' : '—'}</div>
-        </div>
+      <div>
+        <div class="hc-pnl ${pnl>=0?'green':'red'}">${fmtSigned(pnl)}</div>
+        <div class="hc-roi">${fmtPct(roi)} ROI</div>
       </div>
-    </div>`;
-  }).join('');
+    </div>
+    <div class="hc-grid">
+      <div class="hc-item">
+        <div class="hc-item-lbl">Status</div>
+        <div class="hc-item-val ${stateCls}">${stateTxt}</div>
+      </div>
+      <div class="hc-item">
+        <div class="hc-item-lbl">Premiums</div>
+        <div class="hc-item-val">${fmtMoney(tp)}</div>
+      </div>
+      <div class="hc-item">
+        <div class="hc-item-lbl">Days</div>
+        <div class="hc-item-val">${fmtInt(ad)}d</div>
+      </div>
+      <div class="hc-item">
+        <div class="hc-item-lbl">Rolls</div>
+        <div class="hc-item-val">${rolled ? fmtInt(rolled)+'×' : '—'}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// A completed wheel leg: shares acquired by assignment and later sold or
+// called away. P&L here is the stock move; the premiums that lowered the
+// basis are shown alongside, already counted on their own option legs.
+function shareHistCardHTML(i) {
+  const p     = i.ref;
+  const prem  = positionPremiums(p);
+  const cycle = i.pnl + prem;
+  const roi   = positionCapital(p) > 0
+    ? (cycle / positionCapital(p)) * (365 / i.days) * 100 : 0;
+  return `<div class="hist-card" style="border-left:3px solid var(--blue)">
+    <div class="hc-row1">
+      <div>
+        <div class="hc-ticker">${esc(p.ticker)}</div>
+        <div class="hc-meta-lbl">${fmtInt(p.shares)} SHARES · ${fmtMoney(p.costBasis)} → ${fmtMoney(p.closeInfo?.pricePerShare||0)} · ${esc(p.dateAcquired)} → ${esc(p.closeInfo?.dateClosed||'')}</div>
+      </div>
+      <div>
+        <div class="hc-pnl ${cycle>=0?'green':'red'}">${fmtSigned(cycle)}</div>
+        <div class="hc-roi">${fmtPct(roi)} cycle ROI</div>
+      </div>
+    </div>
+    <div class="hc-grid">
+      <div class="hc-item">
+        <div class="hc-item-lbl">Status</div>
+        <div class="hc-item-val blue">${p.closeInfo?.reason === 'called_away' ? 'Called Away' : 'Sold'}</div>
+      </div>
+      <div class="hc-item">
+        <div class="hc-item-lbl">Stock</div>
+        <div class="hc-item-val ${i.pnl>=0?'green':'red'}">${fmtSigned(i.pnl)}</div>
+      </div>
+      <div class="hc-item">
+        <div class="hc-item-lbl">Premiums</div>
+        <div class="hc-item-val">${fmtMoney(prem)}</div>
+      </div>
+      <div class="hc-item">
+        <div class="hc-item-lbl">Held</div>
+        <div class="hc-item-val">${fmtInt(i.days)}d</div>
+      </div>
+    </div>
+  </div>`;
 }
 
 /* ═══════════════════════════════════════
@@ -1270,40 +1803,180 @@ function bSyncDTEToDate() {
 /* ═══════════════════════════════════════
    RENDER: ANALYSIS
 ═══════════════════════════════════════ */
+/* Group realized items and measure each group the same way */
+function breakdown(items, keyFn) {
+  const g = {};
+  items.forEach(i => { const k = keyFn(i); if (k != null) (g[k] = g[k] || []).push(i); });
+  return Object.entries(g).map(([key, list]) => ({
+    key, n: list.length,
+    pnl:  list.reduce((s,i) => s + i.pnl, 0),
+    roi:  itemsROI(list),
+    wins: list.filter(i => i.pnl > 0).length,
+    days: list.reduce((s,i) => s + i.days, 0) / list.length
+  })).sort((a,b) => b.roi - a.roi);
+}
+
+// The term written is the decision the trader makes, so bucket by that
+function dteBucket(t) {
+  const d = t.dteAtExecution || 0;
+  if (d <= 7)  return '0–7d';
+  if (d <= 21) return '8–21d';
+  if (d <= 45) return '22–45d';
+  return '46d+';
+}
+
+function breakdownCardHTML(title, sub, rows, cols) {
+  if (!rows.length) return '';
+  return `<div class="brk-card">
+    <div class="brk-hdr"><div class="brk-title">${title}</div><div class="brk-sub">${sub}</div></div>
+    <div class="brk-row head">
+      <div>${cols[0]}</div><div class="brk-val">${cols[1]}</div>
+      <div class="brk-val">${cols[2]}</div><div class="brk-val">${cols[3]}</div>
+    </div>
+    ${rows.join('')}
+  </div>`;
+}
+
+function groupRowHTML(g) {
+  return `<div class="brk-row">
+    <div class="brk-name">${esc(g.key)}<div style="font-size:8px;color:var(--text3);font-weight:400">
+      ${fmtInt(g.n)} trade${g.n===1?'':'s'} · ${fmtInt(g.days)}d avg</div></div>
+    <div class="brk-val">${fmtPct(g.wins / g.n * 100)}</div>
+    <div class="brk-val ${g.pnl>=0?'green':'red'}">${fmtSigned(g.pnl)}</div>
+    <div class="brk-val amber">${fmtPct(g.roi)}</div>
+  </div>`;
+}
+
 function renderAnalysis() {
-  const trades = load().trades.filter(t => t.status !== 'active');
-  const el = document.getElementById('analysis-content');
-  if (!trades.length) {
-    el.innerHTML = `<div class="empty"><div class="empty-txt">No closed trades to analyze yet</div></div>`;
+  const d      = load();
+  const items  = realizedItems(d);
+  const active = d.trades.filter(t => t.status === 'active');
+  const lots   = loadPositions(d).filter(p => p.status === 'open');
+  const el     = document.getElementById('analysis-content');
+  if (!items.length && !active.length && !lots.length) {
+    el.innerHTML = `<div class="empty"><div class="empty-txt">No trades to analyze yet</div></div>`;
     return;
   }
 
-  // Group by close month
-  const byMonth = {};
-  trades.forEach(t => {
-    const key = (t.closeInfo?.dateClosed || t.dateOpened).slice(0,7);
-    (byMonth[key] = byMonth[key]||[]).push(t);
-  });
+  const { monthly: overallMonthly, pnl: overallPnL } = weightedStats();
+  const wins    = items.filter(i => i.pnl > 0).length;
+  const avgDays = items.length ? items.reduce((s,i) => s + i.days, 0) / items.length : 0;
 
-  const { roi: overallROI, monthly: overallMonthly, pnl: overallPnL } = weightedStats();
   let html = `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
       <div class="stat-card">
         <div class="stat-label">Total Realized P&L</div>
         <div class="stat-value ${overallPnL>=0?'pos':'neg'}">${fmtSigned(overallPnL)}</div>
+        <div class="stat-sub">${fmtInt(items.length)} closed</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Avg Monthly ROI</div>
-        <div class="stat-value pos">${fmtPct(overallMonthly)}</div>
+        <div class="stat-value ${overallMonthly>=0?'pos':'neg'}">${fmtPct(overallMonthly)}</div>
+        <div class="stat-sub">weighted by capital-days</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Win Rate</div>
+        <div class="stat-value neu">${items.length ? fmtPct(wins / items.length * 100) : '—'}</div>
+        <div class="stat-sub">${fmtInt(wins)} of ${fmtInt(items.length)} profitable</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Avg Days Held</div>
+        <div class="stat-value neu">${items.length ? fmtInt(avgDays) + 'd' : '—'}</div>
+        <div class="stat-sub">capital turnover</div>
       </div>
     </div>`;
 
+  /* ── Concentration & assignment risk ──
+     Committed capital as one number hides the question that matters to a
+     put seller: if everything is assigned, what do I owe, and how much of
+     it rides on a single ticker? */
+  const exposure = {};
+  active.filter(t => t.type === 'put').forEach(t => {
+    exposure[t.ticker] = (exposure[t.ticker] || 0) + currentStrike(t) * 100 * tradeQty(t);
+  });
+  lots.forEach(p => { exposure[p.ticker] = (exposure[p.ticker] || 0) + positionCapital(p); });
+  const exposureRows = Object.entries(exposure).sort((a,b) => b[1] - a[1]);
+  const totalExposure = exposureRows.reduce((s,[,v]) => s + v, 0);
+  const putObligation = active.filter(t => t.type === 'put')
+    .reduce((s,t) => s + currentStrike(t) * 100 * tradeQty(t), 0);
+
+  if (exposureRows.length) {
+    const top = exposureRows[0];
+    const topShare = totalExposure ? top[1] / totalExposure * 100 : 0;
+    html += `<div class="bt-preview-hdr">Risk</div>`;
+    if (putObligation > 0) {
+      html += `<div class="risk-note">
+        If every open put is assigned you need <b>${fmtMoney(putObligation)}</b> in cash to take
+        delivery${lots.length ? `, on top of ${fmtMoney(lots.reduce((s,p) => s + positionCapital(p), 0))} already in shares` : ''}.
+      </div>`;
+    }
+    html += breakdownCardHTML('Concentration', 'capital at risk by ticker',
+      exposureRows.map(([tk, v]) => {
+        const share = totalExposure ? v / totalExposure * 100 : 0;
+        return `<div class="brk-row" style="grid-template-columns:1.4fr 1fr 1.6fr">
+          <div class="brk-name">${esc(tk)}</div>
+          <div class="brk-val">${fmtMoney(v)}</div>
+          <div>
+            <div class="brk-val">${fmtPct(share)}</div>
+            <div class="brk-bar"><div class="brk-bar-fill${share >= 40 ? ' hot' : ''}" style="width:${Math.min(100, share).toFixed(1)}%"></div></div>
+          </div>
+        </div>`;
+      }), ['Ticker', 'Exposure', 'Share', '']);
+    if (topShare >= 40) {
+      html += `<div class="risk-note"><b>${esc(top[0])}</b> is ${fmtPct(topShare)} of everything
+        you have at risk. One earnings miss moves most of the book.</div>`;
+    }
+  }
+
+  /* ── Capital efficiency: what to close first ── */
+  if (active.length) {
+    const ranked = active.map(t => {
+      const span = Math.max(1, daysBetween(t.dateOpened, currentExpDate(t)));
+      return { t, capital: tradeCapital(t),
+               roi: roiPct(totalPremiums(t), currentStrike(t), span) };
+    }).sort((a,b) => b.roi - a.roi);
+    html += `<div class="bt-preview-hdr">Capital Efficiency</div>`;
+    // Only call something the weakest when it is actually behind the best —
+    // on a tie there is nothing to single out.
+    const worst = ranked.length > 1 && ranked[ranked.length-1].roi < ranked[0].roi
+      ? ranked.length - 1 : -1;
+    html += breakdownCardHTML('Open positions', 'annualized, best first',
+      ranked.map((r,i) => `<div class="brk-row" style="grid-template-columns:1.4fr 1fr 1fr">
+        <div class="brk-name">${esc(r.t.ticker)}
+          <div style="font-size:8px;color:var(--text3);font-weight:400">
+            ${esc(r.t.type.toUpperCase())} ${fmtMoney(currentStrike(r.t))}${tradeQty(r.t)>1?' ×'+fmtInt(tradeQty(r.t)):''}
+            ${i === worst ? ' · weakest' : ''}</div></div>
+        <div class="brk-val">${r.capital ? fmtMoney(r.capital) : 'covered'}</div>
+        <div class="brk-val ${i === worst ? 'red' : 'amber'}">${fmtPct(r.roi)}</div>
+      </div>`), ['Position', 'Capital', 'Ann. ROI', '']);
+  }
+
+  /* ── What actually works ── */
+  if (items.length) {
+    const optionItems = items.filter(i => i.kind === 'option');
+    html += `<div class="bt-preview-hdr">What Works</div>`;
+    html += breakdownCardHTML('By term written', 'days to expiry at entry',
+      breakdown(optionItems, i => dteBucket(i.ref)).map(groupRowHTML),
+      ['Term', 'Win', 'P&L', 'Ann. ROI']);
+    html += breakdownCardHTML('By ticker', 'where the returns come from',
+      breakdown(items, i => i.ticker).slice(0, 8).map(groupRowHTML),
+      ['Ticker', 'Win', 'P&L', 'Ann. ROI']);
+    html += breakdownCardHTML('By type', 'puts vs calls vs shares',
+      breakdown(items, i => i.kind === 'shares' ? 'Shares' : i.ref.type.toUpperCase()).map(groupRowHTML),
+      ['Type', 'Win', 'P&L', 'Ann. ROI']);
+  }
+
+  /* ── Month by month ── */
+  const byMonth = {};
+  items.forEach(i => { const k = String(i.date).slice(0,7); (byMonth[k] = byMonth[k]||[]).push(i); });
+  if (Object.keys(byMonth).length) html += `<div class="bt-preview-hdr">Month by Month</div>`;
+
   Object.keys(byMonth).sort().reverse().forEach(mk => {
-    const mTrades = byMonth[mk];
-    const mPnL    = mTrades.reduce((s,t) => s + tradePnL(t), 0);
-    const mROI    = annualizedROI(mTrades);
-    const [y,m] = mk.split('-');
-    const mName = new Date(+y, +m-1).toLocaleString('default',{month:'long',year:'numeric'});
+    const mItems = byMonth[mk];
+    const mPnL   = mItems.reduce((s,i) => s + i.pnl, 0);
+    const mROI   = itemsROI(mItems);
+    const [y,m]  = mk.split('-');
+    const mName  = new Date(+y, +m-1).toLocaleString('default',{month:'long',year:'numeric'});
     html += `<div class="month-card">
       <div class="mc-hdr">
         <div class="mc-name">${mName}</div>
@@ -1319,12 +1992,18 @@ function renderAnalysis() {
         </div>
       </div>
       <div class="mc-trades">
-        ${mTrades.map(t => {
-          const p = tradePnL(t);
+        ${mItems.map(i => {
+          const r = i.ref;
+          const label = i.kind === 'shares'
+            ? `${fmtInt(r.shares)} shares at ${fmtMoney(r.costBasis)}`
+            : `${esc(r.type.toUpperCase())} ${fmtMoney(currentStrike(r))}${tradeQty(r)>1?' ×'+fmtInt(tradeQty(r)):''}`;
+          const state = i.kind === 'shares'
+            ? (r.closeInfo?.reason === 'called_away' ? 'called away' : 'sold')
+            : (r.status === 'expired' ? 'exp' : r.status === 'assigned' ? 'assigned' : 'closed');
           return `<div class="mc-trade-row">
-            <div><b>${esc(t.ticker)}</b><span class="muted"> · ${esc(t.type.toUpperCase())} ${fmtMoney(currentStrike(t))}${tradeQty(t)>1?' ×'+fmtInt(tradeQty(t)):''}</span></div>
-            <div><span class="${p>=0?'green':'red'}">${fmtSigned(p)}</span>
-              <span class="muted"> · ${t.status==='expired'?'exp':'closed'}</span></div>
+            <div><b>${esc(i.ticker)}</b><span class="muted"> · ${label}</span></div>
+            <div><span class="${i.pnl>=0?'green':'red'}">${fmtSigned(i.pnl)}</span>
+              <span class="muted"> · ${state}</span></div>
           </div>`;}).join('')}
       </div>
     </div>`;
@@ -1373,7 +2052,7 @@ async function exportExcel() {
   ];
   active.forEach(t => {
     const tp  = totalPremiums(t);
-    const td  = totalDTE(t);
+    const td  = Math.max(1, daysBetween(t.dateOpened, currentExpDate(t)));
     const cs  = currentStrike(t);
     const q   = tradeQty(t);
     const roi = roiPct(tp, cs, td);
@@ -1485,6 +2164,42 @@ async function exportExcel() {
   styleHeaderRow(ws3, monthRows[0].length);
   XLSX.utils.book_append_sheet(wb, ws3, 'Monthly Analysis');
 
+  /* ─────────────────────────────────────
+     SHEET 4 — Share Lots (wheel cycles)
+  ───────────────────────────────────── */
+  const lots = loadPositions();
+  if (lots.length) {
+    const lotRows = [
+      ['Ticker','Shares','Cost Basis','Premiums','Net Basis','Sale Price','Stock P&L','Cycle P&L','Cycle ROI (%)','Days Held','Status','Acquired','Closed']
+    ];
+    lots.forEach(p => {
+      const prem  = positionPremiums(p, trades);
+      const stock = positionStockPnL(p);
+      const cycle = stock + prem;
+      const days  = positionDays(p);
+      const roi   = positionCapital(p) > 0 ? (cycle / positionCapital(p)) * (365 / days) * 100 : 0;
+      lotRows.push([
+        p.ticker, p.shares, p.costBasis, +prem.toFixed(2),
+        +positionNetBasis(p, trades).toFixed(2),
+        p.status === 'closed' ? +(p.closeInfo?.pricePerShare || 0).toFixed(2) : '—',
+        p.status === 'closed' ? +stock.toFixed(2) : '—',
+        p.status === 'closed' ? +cycle.toFixed(2) : '—',
+        p.status === 'closed' ? +roi.toFixed(2)   : '—',
+        days,
+        p.status === 'closed' ? (p.closeInfo?.reason === 'called_away' ? 'Called Away' : 'Sold') : 'Open',
+        p.dateAcquired,
+        p.closeInfo?.dateClosed || '—'
+      ]);
+    });
+    const ws4 = XLSX.utils.aoa_to_sheet(lotRows);
+    ws4['!cols'] = colW([8,8,11,11,10,11,11,11,13,11,12,12,12]);
+    applyNumberFormats(ws4, lotRows.length - 1,
+      { 1: XL_INT, 2: XL_MONEY, 3: XL_MONEY, 4: XL_MONEY, 5: XL_MONEY,
+        6: XL_MONEY, 7: XL_MONEY, 8: XL_PCT, 9: XL_INT });
+    styleHeaderRow(ws4, lotRows[0].length);
+    XLSX.utils.book_append_sheet(wb, ws4, 'Share Lots');
+  }
+
   /* ── Download ── */
   XLSX.writeFile(wb, `options-tracker-${date}.xlsx`);
 }
@@ -1552,6 +2267,84 @@ window.addEventListener('online',  renderOnlineState);
 window.addEventListener('offline', renderOnlineState);
 
 /* ═══════════════════════════════════════
+   EXPIRY REMINDERS
+   The red ≤5-day badge only helps if you happen to open the app. This
+   fires a real notification when you come back to it — on launch and
+   whenever the app returns to the foreground, at most once a day.
+   Genuine background delivery would need a push server and VAPID keys;
+   that is the one thing this app deliberately does not have.
+═══════════════════════════════════════ */
+const NOTIF_KEY = 'opts_last_expiry_notice';
+
+function notificationsSupported() {
+  return typeof Notification !== 'undefined' && 'serviceWorker' in navigator;
+}
+
+function renderNotifState() {
+  const btn = document.getElementById('notif-btn');
+  const sub = document.getElementById('notif-sub');
+  if (!btn || !sub) return;
+  if (!notificationsSupported()) {
+    btn.style.display = 'none';
+    sub.textContent = 'This browser cannot show notifications. Install the app to your home screen for reminders.';
+    return;
+  }
+  const p = Notification.permission;
+  btn.textContent = p === 'granted' ? 'On' : p === 'denied' ? 'Blocked' : 'Enable';
+  btn.classList.toggle('on', p === 'granted');
+  sub.textContent = p === 'granted'
+    ? 'On — you will be reminded when you open the app and something expires within 5 days.'
+    : p === 'denied'
+      ? 'Blocked in your browser settings. Allow notifications for this site to switch it back on.'
+      : 'Get a nudge when a position is within 5 days of expiring.';
+}
+
+async function toggleExpiryReminders() {
+  if (!notificationsSupported()) return;
+  if (Notification.permission === 'granted') {
+    // Nothing to revoke from script — send a sample so it is visibly working
+    checkExpiryReminders(true);
+    return;
+  }
+  try { await Notification.requestPermission(); } catch (_) {}
+  renderNotifState();
+  if (Notification.permission === 'granted') checkExpiryReminders(true);
+}
+
+async function checkExpiryReminders(force) {
+  if (!notificationsSupported() || Notification.permission !== 'granted') return;
+  if (!force && localStorage.getItem(NOTIF_KEY) === todayStr()) return;
+
+  const soon = load().trades
+    .filter(t => t.status === 'active')
+    .map(t => ({ t, dr: daysRemaining(t) }))
+    .filter(x => x.dr <= 5)
+    .sort((a,b) => a.dr - b.dr);
+  if (!soon.length) {
+    if (force) showToast('Reminders on — nothing expires in the next 5 days', null, null, 4000);
+    return;
+  }
+
+  const lead = soon[0];
+  const body = soon.length === 1
+    ? `${lead.t.ticker} ${lead.t.type.toUpperCase()} ${fmtMoney(currentStrike(lead.t))} — ${
+        lead.dr < 0 ? 'past expiration' : lead.dr === 0 ? 'expires today' : `${fmtInt(lead.dr)} day${lead.dr===1?'':'s'} left`}`
+    : `${fmtInt(soon.length)} positions expiring soon — ${lead.t.ticker} first (${
+        lead.dr < 0 ? 'past expiration' : fmtInt(lead.dr) + 'd'})`;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    await reg.showNotification('Options Tracker', {
+      body, tag: 'expiry', icon: './icon.svg', badge: './icon.svg'
+    });
+    localStorage.setItem(NOTIF_KEY, todayStr());
+  } catch (_) {}
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') { renderOnlineState(); checkExpiryReminders(); }
+});
+
+/* ═══════════════════════════════════════
    HARD REFRESH (pull latest from GitHub)
 ═══════════════════════════════════════ */
 function hardRefresh() {
@@ -1592,10 +2385,11 @@ function hardRefresh() {
 function exportData() {
   const d = load();
   const payload = {
-    version: 1,
+    version: 2,
     exported: new Date().toISOString(),
     exportedFrom: 'Options Tracker',
-    trades: d.trades
+    trades: d.trades,
+    positions: loadPositions(d)
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url  = URL.createObjectURL(blob);
@@ -1610,6 +2404,30 @@ function exportData() {
   // Record last export time
   localStorage.setItem('opts_last_export', new Date().toISOString());
   updateLastExportLabel();
+  verifyBackup(payload, d);
+}
+
+/* A backup is only worth having if it restores. Read the file we just
+   wrote back through the same validation an import would apply, and say
+   plainly whether every record survived the round trip. */
+function verifyBackup(payload, d) {
+  const el = document.getElementById('backup-verify');
+  if (!el) return;
+  let restored = 0, positions = 0, err = null;
+  try {
+    const parsed = JSON.parse(JSON.stringify(payload));
+    restored  = (parsed.trades || []).map(normalizeTrade).filter(Boolean).length;
+    positions = (parsed.positions || []).map(normalizePosition).filter(Boolean).length;
+  } catch (e) { err = e.message; }
+  const wantT = d.trades.length, wantP = loadPositions(d).length;
+  const ok = !err && restored === wantT && positions === wantP;
+  el.className   = 'opt-row-sub' + (ok ? '' : ' ');
+  el.style.color = ok ? 'var(--green)' : 'var(--red)';
+  el.textContent = ok
+    ? `✓ Verified restorable — ${fmtInt(restored)} trade${restored===1?'':'s'}`
+      + (positions ? ` and ${fmtInt(positions)} share lot${positions===1?'':'s'}` : '') + ' read back cleanly'
+    : `⚠ Verify failed — ${fmtInt(restored)} of ${fmtInt(wantT)} trades read back`
+      + (err ? ` (${err})` : '') + '. Keep your previous backup.';
 }
 
 function updateLastExportLabel() {
@@ -1636,7 +2454,7 @@ function normalizeTrade(raw) {
   const premium = num(raw.premium);
   if (!TICKER_RE.test(ticker) || strike == null || strike <= 0 || premium == null) return null;
 
-  const status = ['active', 'expired', 'closed_early'].includes(raw.status) ? raw.status : 'active';
+  const status = ['active', 'expired', 'closed_early', 'assigned'].includes(raw.status) ? raw.status : 'active';
   const dte    = Math.max(1, parseInt(raw.dteAtExecution) || 1);
   const t = {
     id: (typeof raw.id === 'string' && /^[a-z0-9_-]{1,40}$/i.test(raw.id)) ? raw.id : uid(),
@@ -1647,7 +2465,8 @@ function normalizeTrade(raw) {
     roiAtExecution: num(raw.roiAtExecution) ?? roiPct(premium, strike, dte),
     dateOpened: DATE_RE.test(raw.dateOpened || '') ? raw.dateOpened : todayStr(),
     expDate:    DATE_RE.test(raw.expDate || '')    ? raw.expDate    : null,
-    status, rolls: [], closeInfo: null
+    status, rolls: [], closeInfo: null,
+    ...(typeof raw.positionId === 'string' ? { positionId: raw.positionId } : {})
   };
   if (Array.isArray(raw.rolls)) {
     raw.rolls.forEach(r => {
@@ -1668,6 +2487,32 @@ function normalizeTrade(raw) {
   return t;
 }
 
+// Validate one raw share lot from a backup file
+function normalizePosition(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const num = v => { const n = parseFloat(v); return isFinite(n) ? n : null; };
+  const ticker = String(raw.ticker || '').toUpperCase().replace(/[^A-Z.]/g, '').slice(0, 6);
+  const shares = parseInt(raw.shares);
+  const basis  = num(raw.costBasis);
+  if (!TICKER_RE.test(ticker) || !(shares > 0) || basis == null || basis <= 0) return null;
+  const p = {
+    id: (typeof raw.id === 'string' && /^[a-z0-9_-]{1,40}$/i.test(raw.id)) ? raw.id : uid(),
+    ticker, shares, costBasis: basis,
+    dateAcquired: DATE_RE.test(raw.dateAcquired || '') ? raw.dateAcquired : todayStr(),
+    sourceTradeId: typeof raw.sourceTradeId === 'string' ? raw.sourceTradeId : null,
+    status: raw.status === 'closed' ? 'closed' : 'open',
+    closeInfo: null
+  };
+  if (p.status === 'closed') {
+    p.closeInfo = {
+      pricePerShare: num(raw.closeInfo?.pricePerShare) ?? 0,
+      dateClosed: DATE_RE.test(raw.closeInfo?.dateClosed || '') ? raw.closeInfo.dateClosed : todayStr(),
+      reason: raw.closeInfo?.reason === 'called_away' ? 'called_away' : 'sold'
+    };
+  }
+  return p;
+}
+
 function previewImport(file) {
   if (!file) return;
   const reader = new FileReader();
@@ -1682,8 +2527,10 @@ function previewImport(file) {
         const t = normalizeTrade(raw);
         if (t) trades.push(t); else skipped++;
       });
+      const positions = (Array.isArray(data.positions) ? data.positions : [])
+        .map(normalizePosition).filter(Boolean);
       if (!trades.length) throw new Error('No valid trades in file');
-      _importPayload = { trades };
+      _importPayload = { trades, positions };
 
       const active  = trades.filter(t => t.status === 'active').length;
       const closed  = trades.filter(t => t.status !== 'active').length;
@@ -1697,6 +2544,7 @@ function previewImport(file) {
         <div class="import-preview-row"><span class="import-preview-lbl">Active</span><span class="import-preview-val">${active}</span></div>
         <div class="import-preview-row"><span class="import-preview-lbl">Closed / Expired</span><span class="import-preview-val">${closed}</span></div>
         <div class="import-preview-row"><span class="import-preview-lbl">Rolled trades</span><span class="import-preview-val">${rolled}</span></div>
+        ${positions.length ? `<div class="import-preview-row"><span class="import-preview-lbl">Share lots</span><span class="import-preview-val">${positions.length}</span></div>` : ''}
         ${skipped ? `<div class="import-preview-row"><span class="import-preview-lbl">Skipped (invalid)</span><span class="import-preview-val" style="color:var(--red)">${skipped}</span></div>` : ''}
       `;
       setImportMode('merge');
@@ -1719,14 +2567,16 @@ function setImportMode(mode) {
 function confirmImport() {
   if (!_importPayload) return;
   const incoming = _importPayload.trades || [];
+  const incomingPos = _importPayload.positions || [];
   if (_importMode === 'replace') {
-    save({ trades: incoming });
+    save({ trades: incoming, positions: incomingPos });
   } else {
-    // Merge: skip any trade whose id already exists
+    // Merge: skip any record whose id already exists
     const current = load();
     const existingIds = new Set(current.trades.map(t => t.id));
-    const newTrades   = incoming.filter(t => !existingIds.has(t.id));
-    current.trades    = current.trades.concat(newTrades);
+    current.trades = current.trades.concat(incoming.filter(t => !existingIds.has(t.id)));
+    const existingPos = new Set(loadPositions(current).map(p => p.id));
+    current.positions = loadPositions(current).concat(incomingPos.filter(p => !existingPos.has(p.id)));
     save(current);
   }
   closeOverlay('m-import');
@@ -2311,6 +3161,8 @@ renderActive();
 updateStats();
 updateLastExportLabel();
 renderOnlineState();
+renderNotifState();
+checkExpiryReminders();
 
 // Handle ?tab= from manifest shortcuts
 (function(){
