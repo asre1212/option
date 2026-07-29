@@ -2234,23 +2234,98 @@ function styleHeaderRow(ws, numCols) {
 }
 
 /* ═══════════════════════════════════════
-   SERVICE WORKER REGISTRATION
+   SERVICE WORKER + AUTOMATIC UPDATES
+   There is no version number to maintain. The service worker derives one
+   from the validators the host sends for the deployed files, so it moves
+   by itself on every deploy. When it changes, the app either reloads
+   straight away or — if you are in the middle of something — offers the
+   update rather than yanking the page out from under you.
 ═══════════════════════════════════════ */
+let appVersion   = null;
+let _swReg       = null;
+let _reloading   = false;
+
+// Never reload out from under an open sheet, a confirm dialog, or a
+// half-typed batch of trades.
+function updateWouldInterrupt() {
+  if (document.querySelector('.overlay.open, .confirm-overlay.open')) return true;
+  const paste = document.getElementById('bt-paste');
+  if (paste && paste.value.trim()) return true;
+  return [...document.querySelectorAll('#bt-rows input')].some(i => i.value.trim());
+}
+
+function applyUpdate() {
+  if (_reloading) return;
+  _reloading = true;
+  // Cache-bust so the reload cannot be answered from the HTTP cache
+  window.location.href = window.location.href.split('?')[0] + '?v=' + Date.now();
+}
+
+function onUpdateReady(version) {
+  if (_reloading || version && version === appVersion) return;
+  if (!updateWouldInterrupt()) { applyUpdate(); return; }
+  showToast('A new version is ready.', 'Reload', applyUpdate, 60000);
+}
+
+function renderVersionLabel() {
+  const el = document.getElementById('app-version');
+  if (el) el.textContent = appVersion ? `Version ${appVersion}` : 'Version — checking…';
+}
+
+function askVersion() {
+  navigator.serviceWorker?.controller?.postMessage('GET_VERSION');
+}
+
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./service-worker.js')
       .then(reg => {
-        console.log('[SW] Registered, scope:', reg.scope);
-        // Listen for messages back from SW
-        navigator.serviceWorker.addEventListener('message', event => {
-          if (event.data === 'READY_TO_RELOAD') {
-            window.location.href = window.location.href.split('?')[0] + '?v=' + Date.now();
-          }
+        _swReg = reg;
+
+        // A new worker script (i.e. this file's own logic changed) — let it
+        // take over as soon as it is ready.
+        reg.addEventListener('updatefound', () => {
+          const incoming = reg.installing;
+          if (!incoming) return;
+          incoming.addEventListener('statechange', () => {
+            if (incoming.state === 'installed' && navigator.serviceWorker.controller) {
+              incoming.postMessage('SKIP_WAITING');
+            }
+          });
         });
+        if (reg.waiting && navigator.serviceWorker.controller) reg.waiting.postMessage('SKIP_WAITING');
+
+        reg.update().catch(() => {});
+        askVersion();
       })
       .catch(err => console.warn('[SW] Registration failed:', err));
+
+    navigator.serviceWorker.addEventListener('message', event => {
+      const data = event.data;
+      if (data === 'READY_TO_RELOAD') { applyUpdate(); return; }
+      if (data && data.type === 'VERSION') {
+        appVersion = data.version || null;
+        renderVersionLabel();
+        return;
+      }
+      if (data && data.type === 'UPDATE_READY') onUpdateReady(data.version);
+    });
+
+    // The worker that took over is serving newer files than this page was
+    // built from, so this page is the stale one.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (appVersion !== null) onUpdateReady(null); else askVersion();
+    });
   });
 }
+
+// Check again whenever the app comes back to the foreground — that is when
+// a phone left open for days notices a deploy.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  _swReg?.update().catch(() => {});
+  askVersion();
+});
 
 /* ═══════════════════════════════════════
    OFFLINE STATE

@@ -146,6 +146,23 @@ A header pill marks the app as offline, the Scan tab explains what is limited wh
 disconnected, and **Update App** declines to run offline rather than clearing the
 cache it is currently running from.
 
+## Updating
+
+Deploys land by themselves, with no version string to maintain anywhere.
+
+The shell is fetched from the network on every online load, so a new deployment is
+noticed as it arrives — no polling and no extra requests. When a release file comes
+back identifying itself differently from the cached copy, that is a new version, and
+every open tab is told. The app then either **reloads straight away**, or — if a
+sheet is open or a batch is half-typed — shows a *"A new version is ready"* toast so
+nothing in progress is thrown away. The check also runs whenever the app returns to
+the foreground, which is how a phone left open for days catches up.
+
+The version itself is a short hash of what those files report; it is shown at the
+bottom of the Scan tab. Both sides of a comparison must carry a validator before
+anything is announced, so a host that sends none simply never raises a false alarm —
+network-first still serves the new copy either way.
+
 ## Batch entry (historic trades)
 
 *Scan → Historic Trades → Batch Entry*, or the link at the bottom of the New Trade
@@ -196,7 +213,11 @@ to install it as an app.
 ## Development notes
 
 - No build step; edit `index.html` / `app.js` directly.
-- The service worker is network-first, so deploys show up on next load with a
-  network connection. The in-app **Update App** button clears the cache explicitly.
+- **There is no version number to bump.** The service worker derives one from the
+  validators (`ETag` / `Last-Modified`) the host already sends for `index.html` and
+  `app.js`, so it changes by itself on every deploy and stays put when nothing has
+  shipped. Push to the branch and that is the whole release process.
+- The in-app **Update App** button is still there as a manual force, and the running
+  version is shown beneath it.
 - External dependencies (Tesseract.js for OCR, SheetJS for Excel export) are
   lazy-loaded from CDNs at pinned versions and only when those features are used.
