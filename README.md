@@ -7,7 +7,8 @@ in your browser's localStorage; nothing is sent to a server.
 ## Features
 
 - **Portfolio** — active positions with strike, premium, contracts, live days-to-expiry
-  (highlighted red when ≤ 5 days), income, and annualized ROI.
+  (highlighted red when ≤ 5 days), income, and annualized ROI. The headline realized
+  P&L figure is **year to date**, with the all-time total on the line beneath it.
 - **Roll tracking** — roll a position to a new strike/expiration; premiums and DTE
   accumulate and the full roll history stays on the card.
 - **History & Analysis** — realized P&L, capital-weighted annualized ROI, and
@@ -20,6 +21,7 @@ in your browser's localStorage; nothing is sent to a server.
   quick rows or pasted straight from a spreadsheet. See below.
 - **Backup** — export/import JSON backups (validated on import), Excel export
   (SheetJS), and a reminder banner when your last backup is over 30 days old.
+- **Offline** — installable and fully usable with no connection. See below.
 
 ## ROI formula
 
@@ -35,6 +37,28 @@ each trade counts by the dollars it committed for the days it was open:
 ```
 ROI% = 365 × Σ profit / Σ (strike × 100 × contracts × days open) × 100
 ```
+
+## Offline
+
+Trades live in `localStorage` and the service worker keeps a copy of the app itself,
+so once the page has been opened online a single time everything core keeps working
+with no connection — viewing and adding trades, rolling, closing, batch entry, the
+ROI calculator, analysis, and JSON export/import.
+
+Two caches back this:
+
+- **App shell** (`index.html`, `app.js`, manifest, icon) — precached on install and
+  refreshed network-first, so a deploy shows up on the next online load.
+- **Third-party assets** (webfont, SheetJS, Tesseract.js) — cache-first in a separate
+  runtime cache, from an explicit host allowlist. Each is stored the first time it is
+  fetched successfully and replayed from then on, so typography survives offline and
+  Excel export and screenshot scanning keep working once they have been run once.
+  Anything outside the allowlist is never intercepted, and a failed fetch is passed
+  through untouched rather than answered with a fabricated response.
+
+A header pill marks the app as offline, the Scan tab explains what is limited while
+disconnected, and **Update App** declines to run offline rather than clearing the
+cache it is currently running from.
 
 ## Batch entry (historic trades)
 
