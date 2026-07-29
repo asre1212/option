@@ -154,6 +154,7 @@
     .act-btn.red{color:var(--red);border-color:rgba(192,57,43,.3);background:rgba(192,57,43,.05)}
     .act-btn.grn{color:var(--green);border-color:rgba(26,127,75,.3);background:rgba(26,127,75,.05)}
     .act-btn.blu{color:var(--blue);border-color:rgba(26,95,175,.3);background:rgba(26,95,175,.05)}
+    .act-btn.amb{color:var(--amber);border-color:rgba(160,96,16,.3);background:rgba(160,96,16,.05)}
     .act-btn.ico{flex:0;width:34px;color:var(--text3);background:var(--bg)}
 
     .roll-hist{
@@ -680,6 +681,105 @@
       border-color:rgba(26,95,175,.4);background:rgba(26,95,175,.07);color:var(--blue);
     }
 
+    /* ── SHARE POSITIONS (WHEEL) ── */
+    .pos-card{
+      background:var(--card);border:1px solid var(--border);
+      border-left:3px solid var(--blue);
+      border-radius:14px;margin-bottom:9px;overflow:hidden;
+      box-shadow:0 1px 3px rgba(0,0,0,.06);
+    }
+    .pc-main{padding:13px 13px 10px}
+    .pc-row1{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px}
+    .pc-ticker{font-size:22px;font-weight:700;letter-spacing:-.02em}
+    .bdg-shares{background:var(--blue-dim);color:var(--blue);border:1px solid rgba(26,95,175,.2)}
+    .bdg-covered{background:var(--green-dim);color:var(--green);border:1px solid rgba(26,127,75,.2)}
+    .pc-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
+    .pc-basis-note{
+      font-size:9px;color:var(--text2);line-height:1.6;
+      background:rgba(26,95,175,.05);border:1px solid rgba(26,95,175,.15);
+      border-radius:8px;padding:7px 9px;margin-bottom:10px;
+    }
+    .pc-basis-note b{color:var(--blue)}
+    .pc-actions{display:flex;gap:8px;padding:12px 13px;border-top:1px solid var(--border);background:rgba(0,0,0,.015)}
+
+    /* ── DECISION SUPPORT ── */
+    .tc-hint{
+      font-size:9px;line-height:1.6;padding:7px 9px;margin:0 13px 10px;
+      border-radius:8px;background:var(--amber-dim);
+      border:1px solid rgba(160,96,16,.2);color:var(--amber);
+    }
+    .tc-hint.good{background:var(--green-dim);border-color:rgba(26,127,75,.25);color:var(--green)}
+    .tc-hint b{color:var(--text2)}
+
+    /* ── ANALYSIS: BREAKDOWNS & RISK ── */
+    .brk-card{
+      background:var(--card);border:1px solid var(--border);
+      border-radius:13px;margin-bottom:9px;overflow:hidden;
+      box-shadow:0 1px 3px rgba(0,0,0,.05);
+    }
+    .brk-hdr{
+      display:flex;justify-content:space-between;align-items:center;
+      padding:11px 13px;border-bottom:1px solid var(--border);
+    }
+    .brk-title{font-size:12px;font-weight:600}
+    .brk-sub{font-size:8px;color:var(--text3);letter-spacing:.08em;text-transform:uppercase}
+    .brk-row{
+      display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr;gap:6px;
+      padding:8px 13px;font-size:10px;align-items:center;
+      border-bottom:1px solid rgba(0,0,0,.05);
+    }
+    .brk-row:last-child{border-bottom:none}
+    .brk-row.head{
+      font-size:7px;color:var(--text3);letter-spacing:.1em;text-transform:uppercase;
+      background:rgba(0,0,0,.02);padding:6px 13px;
+    }
+    .brk-name{font-weight:600}
+    .brk-val{text-align:right}
+    .brk-bar{height:3px;border-radius:2px;background:var(--border);overflow:hidden;margin-top:3px}
+    .brk-bar-fill{height:100%;background:var(--blue);border-radius:2px}
+    .brk-bar-fill.hot{background:var(--red)}
+    .risk-note{
+      background:rgba(160,96,16,.07);border:1px solid rgba(160,96,16,.2);
+      border-radius:10px;padding:10px 12px;margin-bottom:12px;
+      font-size:10px;color:var(--amber);line-height:1.6;
+    }
+    .risk-note b{color:var(--text2)}
+
+    /* ── TOAST (undo) ── */
+    #toast{
+      position:fixed;left:14px;right:14px;
+      bottom:calc(72px + var(--safe-bottom));z-index:400;
+      display:none;align-items:center;gap:10px;
+      background:var(--text);color:var(--surface);
+      border-radius:12px;padding:12px 14px;
+      box-shadow:0 6px 24px rgba(0,0,0,.25);
+      font-size:11px;letter-spacing:.03em;
+    }
+    #toast.show{display:flex}
+    .toast-txt{flex:1;line-height:1.5}
+    .toast-btn{
+      background:none;border:1px solid rgba(255,255,255,.35);
+      color:var(--surface);font-family:inherit;font-size:10px;
+      letter-spacing:.08em;text-transform:uppercase;
+      border-radius:8px;padding:6px 11px;cursor:pointer;
+    }
+
+    /* ── NOTIFICATION / VERIFY ROWS ── */
+    .opt-row{
+      display:flex;align-items:center;gap:10px;
+      background:var(--card);border:1px solid var(--border);
+      border-radius:12px;padding:12px 13px;margin-top:10px;
+    }
+    .opt-row-text{flex:1}
+    .opt-row-title{font-size:12px;font-weight:600;color:var(--text)}
+    .opt-row-sub{font-size:9px;color:var(--text3);margin-top:2px;line-height:1.5}
+    .opt-btn{
+      background:var(--bg);border:1px solid var(--border);color:var(--text2);
+      font-family:inherit;font-size:9px;letter-spacing:.07em;text-transform:uppercase;
+      border-radius:8px;padding:8px 11px;cursor:pointer;white-space:nowrap;
+    }
+    .opt-btn.on{background:var(--green-dim);border-color:rgba(26,127,75,.3);color:var(--green)}
+
     /* ── BATCH HISTORIC ENTRY ── */
     .excel-btn.bt-entry .excel-btn-icon{background:rgba(26,95,175,.1);border-color:rgba(26,95,175,.2)}
     .excel-btn.bt-entry .excel-btn-icon svg{stroke:var(--blue)}
@@ -791,8 +891,8 @@
         <div class="stats-grid">
           <div class="stat-card">
             <div class="stat-label">Realized P&amp;L · YTD</div>
-            <div class="stat-value neu" id="s-pnl-ytd">$0.00</div>
-            <div class="stat-sub" id="s-pnl-sub">all-time $0 · 0 closed</div>
+            <div class="stat-value neu" id="s-pnl-ytd">+$0.00</div>
+            <div class="stat-sub" id="s-pnl-sub">+$0.00 total · 0 closed</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Overall ROI</div>
@@ -801,8 +901,8 @@
           </div>
           <div class="stat-card wide">
             <div class="stat-label">Committed Capital</div>
-            <div class="stat-value neu" id="s-committed">$0</div>
-            <div class="stat-sub" id="s-committed-sub">0 active × strike × 100</div>
+            <div class="stat-value neu" id="s-committed">$0.00</div>
+            <div class="stat-sub" id="s-committed-sub">0 positions × strike × 100 × qty</div>
           </div>
         </div>
       </div>
@@ -813,6 +913,12 @@
           <span class="sec-count" id="active-count">0</span>
         </div>
         <div id="active-list"></div>
+
+        <div class="sec-hdr" id="pos-hdr" style="display:none">
+          <span class="sec-title">Shares Held</span>
+          <span class="sec-count" id="pos-count">0</span>
+        </div>
+        <div id="pos-list"></div>
       </div>
       <button class="fab" id="fab" onclick="openAddModal()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -829,7 +935,7 @@
         <div class="summary-grid">
           <div class="sum-card">
             <div class="sum-lbl">P&amp;L</div>
-            <div class="sum-val neu" id="h-pnl">$0</div>
+            <div class="sum-val neu" id="h-pnl">+$0.00</div>
           </div>
           <div class="sum-card">
             <div class="sum-lbl">Avg ROI</div>
@@ -1125,6 +1231,21 @@
             </div>
           </button>
 
+          <div class="opt-row">
+            <div class="opt-row-text">
+              <div class="opt-row-title">Expiry Reminders</div>
+              <div class="opt-row-sub" id="notif-sub">Get a nudge when a position is within 5 days of expiring.</div>
+            </div>
+            <button class="opt-btn" id="notif-btn" onclick="toggleExpiryReminders()">Enable</button>
+          </div>
+
+          <div class="opt-row">
+            <div class="opt-row-text">
+              <div class="opt-row-title">Backup Check</div>
+              <div class="opt-row-sub" id="backup-verify">Every export is read back and verified before it's called done.</div>
+            </div>
+          </div>
+
           <div class="backup-info">
             <b>Switching iPhones?</b> Export your data first, save the file to iCloud Drive or Notes, then open the app on your new phone and use Import to restore everything.
           </div>
@@ -1173,7 +1294,7 @@
     <div class="sheet-body">
       <div class="fg">
         <label class="fl">Ticker</label>
-        <input class="fi" type="text" id="a-ticker" placeholder="AAPL" style="text-transform:uppercase">
+        <input class="fi" type="text" id="a-ticker" placeholder="AAPL" style="text-transform:uppercase" oninput="renderCoversOptions()">
       </div>
       <div class="fr">
         <div class="fg">
@@ -1206,6 +1327,14 @@
         <div class="fg">
           <label class="fl">Days to Exp (DTE)</label>
           <input class="fi" type="number" id="a-dte" placeholder="30" oninput="aSyncDTEToDate();addROIUpdate()">
+        </div>
+      </div>
+      <div class="fg" id="a-covers-wrap" style="display:none">
+        <label class="fl">Covered by shares you hold</label>
+        <select class="fi" id="a-covers" onchange="addROIUpdate()"></select>
+        <div class="rp-sub" style="margin-top:5px">
+          Linking the call to a lot measures its return against what those shares
+          cost you, and keeps the capital from being counted twice.
         </div>
       </div>
       <div class="roi-preview" id="a-roi-prev">
@@ -1330,6 +1459,7 @@
         </div>
         <div class="rp-val" id="r-roi-val">—</div>
       </div>
+      <div class="tc-hint" id="r-verdict" style="display:none;margin:0 0 13px"></div>
       <button class="sub-btn" onclick="executeRoll()">Confirm Roll</button>
     </div>
   </div>
@@ -1406,6 +1536,90 @@
   </div>
 </div>
 
+<!-- ═══ MODAL: ASSIGNMENT ═══ -->
+<div class="overlay" id="m-assign">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-hdr">
+      <div class="sheet-title" id="as-title">Assigned</div>
+      <button class="sheet-close" onclick="closeOverlay('m-assign')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="sheet-body">
+      <input type="hidden" id="as-id">
+      <div class="info-box" id="as-info">—</div>
+      <div class="fg">
+        <label class="fl">Assignment Date</label>
+        <input class="fi" type="date" id="as-date" oninput="assignUpdate()">
+      </div>
+      <div class="roi-preview" id="as-preview">
+        <div>
+          <div class="rp-label" id="as-prev-label">Shares Acquired</div>
+          <div class="rp-sub" id="as-prev-sub">—</div>
+        </div>
+        <div class="rp-val" id="as-prev-val">—</div>
+      </div>
+      <button class="sub-btn" onclick="confirmAssign()">Record Assignment</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL: CLOSE SHARE LOT ═══ -->
+<div class="overlay" id="m-closepos">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-hdr">
+      <div class="sheet-title">Sell Shares</div>
+      <button class="sheet-close" onclick="closeOverlay('m-closepos')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="sheet-body">
+      <input type="hidden" id="cp-id">
+      <div class="info-box" id="cp-info">—</div>
+      <div class="fr">
+        <div class="fg">
+          <label class="fl">Sale Price / Share</label>
+          <input class="fi" type="number" id="cp-price" placeholder="152.50" step="0.01" oninput="closePosUpdate()">
+        </div>
+        <div class="fg">
+          <label class="fl">Sale Date</label>
+          <input class="fi" type="date" id="cp-date" oninput="closePosUpdate()">
+        </div>
+      </div>
+      <div class="roi-preview" style="border-color:var(--border);background:var(--bg)">
+        <div>
+          <div class="rp-label" style="color:var(--text3)">Cycle P&amp;L</div>
+          <div class="rp-sub" id="cp-formula">stock move + premiums collected</div>
+        </div>
+        <div class="rp-val" id="cp-pnl" style="color:var(--text)">—</div>
+      </div>
+      <div class="roi-preview" style="margin-top:-6px;border-color:rgba(26,95,175,.2);background:rgba(26,95,175,.05)">
+        <div>
+          <div class="rp-label" style="color:rgba(68,138,255,.7)">Cycle Ann. ROI</div>
+          <div class="rp-sub" id="cp-roi-formula">on the capital the shares tied up</div>
+        </div>
+        <div class="rp-val" id="cp-roi" style="color:var(--blue)">—</div>
+      </div>
+      <button class="sub-btn" onclick="confirmClosePos()">Record Sale</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ CONFIRM: DELETE SHARE LOT ═══ -->
+<div class="confirm-overlay" id="cd-delpos">
+  <div class="confirm-box">
+    <div class="confirm-title">Remove Share Lot?</div>
+    <div class="confirm-body">This removes the lot and unlinks any covered calls written against it. The option trades themselves are kept.</div>
+    <input type="hidden" id="delpos-id">
+    <div class="confirm-acts">
+      <button class="c-btn" onclick="closeConfirm('cd-delpos')">Cancel</button>
+      <button class="c-btn red" onclick="confirmDeletePos()">Remove</button>
+    </div>
+  </div>
+</div>
+
 <!-- ═══ CONFIRM: DELETE ═══ -->
 <div class="confirm-overlay" id="cd-delete">
   <div class="confirm-box">
@@ -1430,6 +1644,12 @@
       <button class="c-btn green" onclick="confirmExpire()">Expired ✓</button>
     </div>
   </div>
+</div>
+
+<!-- ═══ UNDO TOAST ═══ -->
+<div id="toast" role="status" aria-live="polite">
+  <div class="toast-txt" id="toast-txt"></div>
+  <button class="toast-btn" id="toast-btn" onclick="toastAction()">Undo</button>
 </div>
 
 <script src="./app.js"></script>
