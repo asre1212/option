@@ -18,6 +18,33 @@ const DATE_RE   = /^\d{4}-\d{2}-\d{2}$/;
 const tradeQty = t => Math.max(1, parseInt(t.qty) || 1);
 
 /* ═══════════════════════════════════════
+   NUMBER FORMATTING
+   Every figure in the app is rendered through these, so the same value
+   reads the same way everywhere: grouped thousands, two decimals for
+   money and for percentages.
+   Grouping is pinned to en-US rather than the device locale because the
+   "$" is hardcoded — a phone that groups with dots would otherwise show
+   ten thousand dollars as "$10.000".
+═══════════════════════════════════════ */
+const numOr0 = v => { const n = Number(v); return isFinite(n) ? n : 0; };
+
+const fmtNum = (v, dp = 2) =>
+  numOr0(v).toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+
+// $1,234.56 — an amount with no direction of its own
+const fmtMoney  = v => '$' + fmtNum(Math.abs(numOr0(v)));
+// +$1,234.56 / -$1,234.56 — anything that can be a profit or a loss.
+// Rounds before choosing the sign so -0.001 never renders as "-$0.00".
+const fmtSigned = v => {
+  const r = Math.round(numOr0(v) * 100) / 100;
+  return (r < 0 ? '-$' : '+$') + fmtNum(Math.abs(r));
+};
+// 12.04%
+const fmtPct    = v => fmtNum(v) + '%';
+// Whole counts — days, contracts, trades
+const fmtInt    = v => Math.round(numOr0(v)).toLocaleString('en-US');
+
+/* ═══════════════════════════════════════
    CALCULATIONS
 ═══════════════════════════════════════ */
 // ROI% = (365/DTE) × (premium×100 / strike) — which equals (365/DTE)×(premium/strike)×100
@@ -204,8 +231,9 @@ function addROIUpdate() {
   const d = parseFloat(document.getElementById('a-dte').value);
   if (p && s && d) {
     const r = roiPct(p, s, d);
-    document.getElementById('a-roi-val').textContent = r.toFixed(2) + '%';
-    document.getElementById('a-roi-formula').textContent = `(365/${d}) × (${p.toFixed(2)}×100/${s}) → ${r.toFixed(2)}%`;
+    document.getElementById('a-roi-val').textContent = fmtPct(r);
+    document.getElementById('a-roi-formula').textContent =
+      `(365/${fmtInt(d)}) × (${fmtMoney(p)}×100 / ${fmtMoney(s)}) → ${fmtPct(r)}`;
   } else {
     document.getElementById('a-roi-val').textContent = '—';
     document.getElementById('a-roi-formula').textContent = '—';
@@ -632,13 +660,13 @@ function batchReview() {
       </div>
       <div class="bt-sum-card">
         <div class="bt-sum-lbl">Realized P&amp;L</div>
-        <div class="bt-sum-val ${pnl >= 0 ? 'green' : 'red'}">${pnl >= 0 ? '+$' : '-$'}${Math.abs(pnl).toFixed(0)}</div>
+        <div class="bt-sum-val ${pnl >= 0 ? 'green' : 'red'}">${fmtSigned(pnl)}</div>
       </div>
     </div>`;
 
   if (roi != null) {
     html += `<div class="info-box">Adds ${closed.length} closed trade${closed.length === 1 ? '' : 's'}
-      at <b>${roi.toFixed(1)}%</b> weighted annualized ROI.</div>`;
+      at <b>${fmtPct(roi)}</b> weighted annualized ROI.</div>`;
   }
 
   results.forEach(r => {
@@ -651,17 +679,17 @@ function batchReview() {
     }
     const t   = r.trade;
     const p   = tradePnL(t);
-    const dur = t.status === 'active' ? `${t.dteAtExecution}d to exp` : `${actualDays(t)}d held`;
+    const dur = t.status === 'active' ? `${fmtInt(t.dteAtExecution)}d to exp` : `${fmtInt(actualDays(t))}d held`;
     const st  = t.status === 'active' ? 'active' : t.status === 'expired' ? 'expired' : 'closed early';
     html += `<div class="bt-prow">
       <div class="bt-prow-top">
-        <div class="bt-prow-name">${esc(t.ticker)} <span class="muted" style="font-size:10px">${esc(t.type.toUpperCase())} $${t.strikePrice}${t.qty > 1 ? ' ×' + t.qty : ''}</span></div>
+        <div class="bt-prow-name">${esc(t.ticker)} <span class="muted" style="font-size:10px">${esc(t.type.toUpperCase())} ${fmtMoney(t.strikePrice)}${t.qty > 1 ? ' ×' + fmtInt(t.qty) : ''}</span></div>
         <div class="bt-prow-pnl ${t.status === 'active' ? 'muted' : p >= 0 ? 'green' : 'red'}">${
-          t.status === 'active' ? '—' : (p >= 0 ? '+$' : '-$') + Math.abs(p).toFixed(2)}</div>
+          t.status === 'active' ? '—' : fmtSigned(p)}</div>
       </div>
-      <div class="bt-prow-meta">${esc(t.dateOpened)} → ${esc(t.expDate)} · ${dur} · ${st} · ${roiPct(
+      <div class="bt-prow-meta">${esc(t.dateOpened)} → ${esc(t.expDate)} · ${dur} · ${st} · ${fmtPct(roiPct(
         t.status === 'closed_early' ? t.premium - (t.closeInfo?.buyingPrice || 0) : t.premium,
-        t.strikePrice, t.status === 'active' ? t.dteAtExecution : actualDays(t)).toFixed(1)}% ann. ROI</div>
+        t.strikePrice, t.status === 'active' ? t.dteAtExecution : actualDays(t)))} ann. ROI</div>
       ${r.notes.length ? `<div class="bt-prow-note">${r.notes.map(n => '• ' + esc(n)).join('<br>')}</div>` : ''}
     </div>`;
   });
@@ -736,8 +764,8 @@ function openRoll(id) {
   document.getElementById('r-expdate').value = '';
   document.getElementById('r-roi-val').textContent = '—';
   document.getElementById('r-info').innerHTML =
-    `<b>${esc(t.ticker)}</b> ${esc(t.type.toUpperCase())}${tradeQty(t)>1?' ×'+tradeQty(t):''} &nbsp;|&nbsp; Current strike: <b>$${currentStrike(t)}</b><br>
-     Premiums so far: <b>$${totalPremiums(t).toFixed(2)}</b> &nbsp;|&nbsp; Total DTE: <b>${totalDTE(t)}d</b>`;
+    `<b>${esc(t.ticker)}</b> ${esc(t.type.toUpperCase())}${tradeQty(t)>1?' ×'+fmtInt(tradeQty(t)):''} &nbsp;|&nbsp; Current strike: <b>${fmtMoney(currentStrike(t))}</b><br>
+     Premiums so far: <b>${fmtMoney(totalPremiums(t))}</b> &nbsp;|&nbsp; Total DTE: <b>${fmtInt(totalDTE(t))}d</b>`;
   openOverlay('m-roll');
 }
 
@@ -752,9 +780,9 @@ function rollROIUpdate() {
     const tp = totalPremiums(t) + np;
     const td = totalDTE(t) + nd;
     const r  = roiPct(tp, ns, td);
-    document.getElementById('r-roi-val').textContent = r.toFixed(2) + '%';
+    document.getElementById('r-roi-val').textContent = fmtPct(r);
     document.getElementById('r-roi-formula').textContent =
-      `(365/${td}) × ($${tp.toFixed(2)}/$${ns}) × 100`;
+      `(365/${fmtInt(td)}) × (${fmtMoney(tp)} / ${fmtMoney(ns)}) × 100`;
   }
 }
 
@@ -786,8 +814,8 @@ function openClose(id) {
   document.getElementById('cl-pnl').textContent = '—';
   document.getElementById('cl-roi').textContent = '—';
   document.getElementById('cl-info').innerHTML  =
-    `<b>${esc(t.ticker)}</b> ${esc(t.type.toUpperCase())}${tradeQty(t)>1?' ×'+tradeQty(t):''} &nbsp;|&nbsp; Strike: <b>$${currentStrike(t)}</b><br>
-     Total premiums collected: <b>$${totalPremiums(t).toFixed(2)}</b>`;
+    `<b>${esc(t.ticker)}</b> ${esc(t.type.toUpperCase())}${tradeQty(t)>1?' ×'+fmtInt(tradeQty(t)):''} &nbsp;|&nbsp; Strike: <b>${fmtMoney(currentStrike(t))}</b><br>
+     Total premiums collected: <b>${fmtMoney(totalPremiums(t))}</b>`;
   openOverlay('m-close');
 }
 
@@ -804,14 +832,14 @@ function closeUpdate() {
   const d   = Math.max(1, Math.ceil((new Date(closeDate) - new Date(t.dateOpened)) / 86400000));
   const roi = roiPct(tp - buy, currentStrike(t), d);
   const pnlEl = document.getElementById('cl-pnl');
-  pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+  pnlEl.textContent = fmtSigned(pnl);
   pnlEl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
   document.getElementById('cl-formula').textContent =
-    `($${tp.toFixed(2)} − $${buy.toFixed(2)}) × 100${q>1?' × '+q:''}`;
+    `(${fmtMoney(tp)} − ${fmtMoney(buy)}) × 100${q>1?' × '+fmtInt(q):''}`;
   const roiEl = document.getElementById('cl-roi');
-  roiEl.textContent = roi.toFixed(2) + '%';
+  roiEl.textContent = fmtPct(roi);
   roiEl.style.color = roi >= 0 ? 'var(--blue)' : 'var(--red)';
-  document.getElementById('cl-roi-formula').textContent = `${d} actual days open`;
+  document.getElementById('cl-roi-formula').textContent = `${fmtInt(d)} actual days open`;
 }
 
 function executeClose() {
@@ -839,7 +867,7 @@ function openExpire(id) {
   const pnl = totalPremiums(t) * 100 * q;
   document.getElementById('exp-id').value = id;
   document.getElementById('exp-body').textContent =
-    `${t.ticker} expired worthless. Record +$${pnl.toFixed(2)} profit ($${totalPremiums(t).toFixed(2)} × 100${q>1?' × '+q:''})?`;
+    `${t.ticker} expired worthless. Record ${fmtSigned(pnl)} profit (${fmtMoney(totalPremiums(t))} × 100${q>1?' × '+fmtInt(q):''})?`;
   openConfirm('cd-expire');
 }
 function confirmExpire() {
@@ -895,7 +923,7 @@ function tradeCardHTML(t) {
   const rolled = t.rolls && t.rolls.length > 0;
   const roi = rolled ? roiPct(tp, cs, td) : t.roiAtExecution;
   const dr  = daysRemaining(t);
-  const drVal = dr < 0 ? 'past exp' : dr + 'd';
+  const drVal = dr < 0 ? 'past exp' : fmtInt(dr) + 'd';
   const drCls = dr <= 5 ? ' red' : '';
 
   const rollHistHTML = rolled ? `
@@ -903,12 +931,12 @@ function tradeCardHTML(t) {
       <div class="roll-lbl">Roll History — ${t.rolls.length}×</div>
       <div class="roll-row orig">
         <span>Original</span>
-        <span>$${t.strikePrice} strike · $${t.premium.toFixed(2)} prem · ${t.dteAtExecution}d</span>
+        <span>${fmtMoney(t.strikePrice)} strike · ${fmtMoney(t.premium)} prem · ${fmtInt(t.dteAtExecution)}d</span>
       </div>
       ${t.rolls.map((r,i) => `
         <div class="roll-row">
           <span class="blue">Roll ${i+1} &nbsp;<span style="color:var(--text3);font-size:9px">${esc(r.dateRolled)}</span></span>
-          <span>$${r.strikePrice} · $${r.premium.toFixed(2)} · ${r.dte}d</span>
+          <span>${fmtMoney(r.strikePrice)} · ${fmtMoney(r.premium)} · ${fmtInt(r.dte)}d</span>
         </div>`).join('')}
     </div>` : '';
 
@@ -925,15 +953,15 @@ function tradeCardHTML(t) {
       <div class="tc-metrics">
         <div class="metric">
           <div class="m-label">Strike</div>
-          <div class="m-val">$${cs}</div>
+          <div class="m-val">${fmtMoney(cs)}</div>
         </div>
         <div class="metric">
           <div class="m-label">${rolled ? 'Total Prem' : 'Premium'}</div>
-          <div class="m-val">$${tp.toFixed(2)}</div>
+          <div class="m-val">${fmtMoney(tp)}</div>
         </div>
         <div class="metric">
           <div class="m-label">Ann. ROI</div>
-          <div class="m-val amber">${roi.toFixed(1)}%</div>
+          <div class="m-val amber">${fmtPct(roi)}</div>
         </div>
         <div class="metric">
           <div class="m-label">Days Left</div>
@@ -941,7 +969,7 @@ function tradeCardHTML(t) {
         </div>
         <div class="metric">
           <div class="m-label">Income</div>
-          <div class="m-val green">$${(tp*100*q).toFixed(0)}</div>
+          <div class="m-val green">${fmtMoney(tp*100*q)}</div>
         </div>
         <div class="metric">
           <div class="m-label">Opened</div>
@@ -973,16 +1001,15 @@ function updateStats() {
   // P&L — this year's realized total leads, all-time sits underneath
   const ytd   = ytdPnL(closed);
   const pnlEl = document.getElementById('s-pnl-ytd');
-  pnlEl.textContent = (ytd >= 0 ? '+$' : '-$') + Math.abs(ytd).toFixed(2);
+  pnlEl.textContent = fmtSigned(ytd);
   pnlEl.className   = 'stat-value ' + (ytd > 0 ? 'pos' : ytd < 0 ? 'neg' : 'neu');
   document.getElementById('s-pnl-sub').textContent =
-    `all-time ${pnl >= 0 ? '+$' : '-$'}${Math.abs(pnl).toLocaleString(undefined,{maximumFractionDigits:0})}`
-    + ` · ${closed.length} closed`;
+    `${fmtSigned(pnl)} total · ${fmtInt(closed.length)} closed`;
 
   // ROI
   const roiEl = document.getElementById('s-roi');
   if (closed.length) {
-    roiEl.textContent = roi.toFixed(1) + '%';
+    roiEl.textContent = fmtPct(roi);
     roiEl.className   = 'stat-value ' + (roi >= 0 ? 'pos' : 'neg');
   } else {
     roiEl.textContent = '—';
@@ -991,9 +1018,9 @@ function updateStats() {
 
   // Committed
   const committed = active.reduce((s,t) => s + currentStrike(t)*100*tradeQty(t), 0);
-  document.getElementById('s-committed').textContent = '$' + committed.toLocaleString();
+  document.getElementById('s-committed').textContent = fmtMoney(committed);
   document.getElementById('s-committed-sub').textContent =
-    active.length + ' position' + (active.length!==1?'s':'') + ' × strike × 100 × qty';
+    fmtInt(active.length) + ' position' + (active.length!==1?'s':'') + ' × strike × 100 × qty';
 
   renderBackupReminder();
 }
@@ -1032,15 +1059,15 @@ function renderHistory() {
   const { roi, monthly, pnl } = weightedStats();
 
   const hp = document.getElementById('h-pnl');
-  hp.textContent = (pnl>=0?'+$':'-$') + Math.abs(pnl).toFixed(2);
+  hp.textContent = fmtSigned(pnl);
   hp.className   = 'sum-val ' + (pnl>0?'green':pnl<0?'red':'');
 
   const hr = document.getElementById('h-roi');
-  hr.textContent = closed.length ? roi.toFixed(1)+'%' : '—';
+  hr.textContent = closed.length ? fmtPct(roi) : '—';
   hr.className   = 'sum-val ' + (roi>0?'green':roi<0?'red':'');
 
   const hm = document.getElementById('h-monthly');
-  hm.textContent = closed.length ? monthly.toFixed(1)+'%' : '—';
+  hm.textContent = closed.length ? fmtPct(monthly) : '—';
   hm.className   = 'sum-val amber';
 
   const el = document.getElementById('history-list');
@@ -1062,11 +1089,11 @@ function renderHistory() {
       <div class="hc-row1">
         <div>
           <div class="hc-ticker">${esc(t.ticker)}</div>
-          <div class="hc-meta-lbl">${esc(t.type.toUpperCase())} · $${cs}${q>1?' ×'+q:''} · ${esc(t.dateOpened)}${t.closeInfo?.dateClosed?' → '+esc(t.closeInfo.dateClosed):''}</div>
+          <div class="hc-meta-lbl">${esc(t.type.toUpperCase())} · ${fmtMoney(cs)}${q>1?' ×'+fmtInt(q):''} · ${esc(t.dateOpened)}${t.closeInfo?.dateClosed?' → '+esc(t.closeInfo.dateClosed):''}</div>
         </div>
         <div>
-          <div class="hc-pnl ${pnl>=0?'green':'red'}">${pnl>=0?'+$':'-$'}${Math.abs(pnl).toFixed(2)}</div>
-          <div class="hc-roi">${roi.toFixed(1)}% ROI</div>
+          <div class="hc-pnl ${pnl>=0?'green':'red'}">${fmtSigned(pnl)}</div>
+          <div class="hc-roi">${fmtPct(roi)} ROI</div>
         </div>
       </div>
       <div class="hc-grid">
@@ -1076,11 +1103,11 @@ function renderHistory() {
         </div>
         <div class="hc-item">
           <div class="hc-item-lbl">Premiums</div>
-          <div class="hc-item-val">$${tp.toFixed(2)}</div>
+          <div class="hc-item-val">${fmtMoney(tp)}</div>
         </div>
         <div class="hc-item">
           <div class="hc-item-lbl">Days</div>
-          <div class="hc-item-val">${ad}d</div>
+          <div class="hc-item-val">${fmtInt(ad)}d</div>
         </div>
         <div class="hc-item">
           <div class="hc-item-lbl">Rolls</div>
@@ -1145,8 +1172,8 @@ function calcUpdate() {
     document.getElementById('vs-ticker-a').textContent = tickA;
     document.getElementById('vs-ticker-b').textContent = tickB;
 
-    elRoiA.textContent = roiA != null ? roiA.toFixed(2) + '%' : '—';
-    elRoiB.textContent = roiB != null ? roiB.toFixed(2) + '%' : '—';
+    elRoiA.textContent = roiA != null ? fmtPct(roiA) : '—';
+    elRoiB.textContent = roiB != null ? fmtPct(roiB) : '—';
     elRoiA.className   = 'vs-leg-roi' + (roiA != null ? ' has-val' : '');
     elRoiB.className   = 'vs-leg-roi' + (roiB != null ? ' has-val' : '');
 
@@ -1160,25 +1187,25 @@ function calcUpdate() {
     diffRow.classList.remove('show');
 
     if (roiA != null && roiB != null) {
-      const diff = Math.abs(roiA - roiB).toFixed(2);
+      const diff = fmtNum(Math.abs(roiA - roiB));
       if (roiA >= roiB) {
         elResA.classList.add('winner');
         elRoiA.classList.add('winner-val');
         elSubA.innerHTML = '<span class="vs-winner-badge">Better ▲</span>';
-        elSubB.textContent = `$${(p2*100).toFixed(2)} income`;
+        elSubB.textContent = `${fmtMoney(p2*100)} income`;
         document.getElementById('vs-diff-label').textContent = `${tickA} leads by`;
       } else {
         elResB.classList.add('winner');
         elRoiB.classList.add('winner-val');
         elSubB.innerHTML = '<span class="vs-winner-badge">Better ▲</span>';
-        elSubA.textContent = `$${(p*100).toFixed(2)} income`;
+        elSubA.textContent = `${fmtMoney(p*100)} income`;
         document.getElementById('vs-diff-label').textContent = `${tickB} leads by`;
       }
       document.getElementById('vs-diff-val').textContent = diff + '% annualized ROI';
       diffRow.classList.add('show');
     } else {
-      if (roiA != null) elSubA.textContent = `$${(p*100).toFixed(2)} income · ${d}d`;
-      if (roiB != null) elSubB.textContent = `$${(p2*100).toFixed(2)} income · ${d2}d`;
+      if (roiA != null) elSubA.textContent = `${fmtMoney(p*100)} income · ${fmtInt(d)}d`;
+      if (roiB != null) elSubB.textContent = `${fmtMoney(p2*100)} income · ${fmtInt(d2)}d`;
     }
     return;
   }
@@ -1192,19 +1219,20 @@ function calcUpdate() {
   }
   const roi    = roiPct(p, s, d);
   const income = p * 100;
-  document.getElementById('c-roi').textContent     = roi.toFixed(2) + '%';
-  document.getElementById('c-roi-sub').textContent = `$${income.toFixed(2)} income on $${s} strike · ${d}d`;
+  document.getElementById('c-roi').textContent     = fmtPct(roi);
+  document.getElementById('c-roi-sub').textContent =
+    `${fmtMoney(income)} income on ${fmtMoney(s)} strike · ${fmtInt(d)}d`;
   bd.style.display = 'grid';
-  document.getElementById('c-income').textContent  = '$' + income.toFixed(2);
-  document.getElementById('c-period').textContent  = ((p/s)*100).toFixed(2) + '%';
-  document.getElementById('c-monthly').textContent = (roi/12).toFixed(2) + '%';
-  document.getElementById('c-weekly').textContent  = (roi/52).toFixed(2) + '%';
+  document.getElementById('c-income').textContent  = fmtMoney(income);
+  document.getElementById('c-period').textContent  = fmtPct((p/s)*100);
+  document.getElementById('c-monthly').textContent = fmtPct(roi/12);
+  document.getElementById('c-weekly').textContent  = fmtPct(roi/52);
 }
 
 function renderCalcAverages() {
   const { roi, monthly } = weightedStats();
-  document.getElementById('c-avg-roi').textContent     = roi     ? roi.toFixed(1)+'%'     : '—';
-  document.getElementById('c-avg-monthly').textContent = monthly ? monthly.toFixed(1)+'%' : '—';
+  document.getElementById('c-avg-roi').textContent     = roi     ? fmtPct(roi)     : '—';
+  document.getElementById('c-avg-monthly').textContent = monthly ? fmtPct(monthly) : '—';
 }
 
 function executeCalcTrade(leg) {
@@ -1262,11 +1290,11 @@ function renderAnalysis() {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
       <div class="stat-card">
         <div class="stat-label">Total Realized P&L</div>
-        <div class="stat-value ${overallPnL>=0?'pos':'neg'}">${overallPnL>=0?'+$':'-$'}${Math.abs(overallPnL).toFixed(2)}</div>
+        <div class="stat-value ${overallPnL>=0?'pos':'neg'}">${fmtSigned(overallPnL)}</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Avg Monthly ROI</div>
-        <div class="stat-value pos">${overallMonthly.toFixed(2)}%</div>
+        <div class="stat-value pos">${fmtPct(overallMonthly)}</div>
       </div>
     </div>`;
 
@@ -1281,11 +1309,11 @@ function renderAnalysis() {
         <div class="mc-name">${mName}</div>
         <div class="mc-stats">
           <div class="mc-stat">
-            <div class="mc-stat-val ${mROI>=0?'amber':'red'}">${mROI.toFixed(1)}%</div>
+            <div class="mc-stat-val ${mROI>=0?'amber':'red'}">${fmtPct(mROI)}</div>
             <div class="mc-stat-lbl">ROI</div>
           </div>
           <div class="mc-stat">
-            <div class="mc-stat-val ${mPnL>=0?'green':'red'}">${mPnL>=0?'+$':'-$'}${Math.abs(mPnL).toFixed(0)}</div>
+            <div class="mc-stat-val ${mPnL>=0?'green':'red'}">${fmtSigned(mPnL)}</div>
             <div class="mc-stat-lbl">P&L</div>
           </div>
         </div>
@@ -1294,8 +1322,8 @@ function renderAnalysis() {
         ${mTrades.map(t => {
           const p = tradePnL(t);
           return `<div class="mc-trade-row">
-            <div><b>${esc(t.ticker)}</b><span class="muted"> · ${esc(t.type.toUpperCase())} $${currentStrike(t)}${tradeQty(t)>1?' ×'+tradeQty(t):''}</span></div>
-            <div><span class="${p>=0?'green':'red'}">${p>=0?'+$':'-$'}${Math.abs(p).toFixed(2)}</span>
+            <div><b>${esc(t.ticker)}</b><span class="muted"> · ${esc(t.type.toUpperCase())} ${fmtMoney(currentStrike(t))}${tradeQty(t)>1?' ×'+fmtInt(tradeQty(t)):''}</span></div>
+            <div><span class="${p>=0?'green':'red'}">${fmtSigned(p)}</span>
               <span class="muted"> · ${t.status==='expired'?'exp':'closed'}</span></div>
           </div>`;}).join('')}
       </div>
@@ -1350,7 +1378,7 @@ async function exportExcel() {
     const q   = tradeQty(t);
     const roi = roiPct(tp, cs, td);
     const rollStrikes = t.rolls.length
-      ? t.rolls.map(r => `$${r.strikePrice}`).join(' → ')
+      ? t.rolls.map(r => fmtMoney(r.strikePrice)).join(' → ')
       : '—';
     activeRows.push([
       t.ticker,
@@ -1370,6 +1398,9 @@ async function exportExcel() {
   });
   const ws1 = XLSX.utils.aoa_to_sheet(activeRows);
   ws1['!cols'] = colW([8,6,9,5,10,13,12,6,13,12,12,6,22]);
+  // Strike, Qty, Premium, Total Premium, Income, DTE, ROI
+  applyNumberFormats(ws1, activeRows.length - 1,
+    { 2: XL_MONEY, 3: XL_INT, 4: XL_MONEY, 5: XL_MONEY, 6: XL_MONEY, 7: XL_INT, 8: XL_PCT, 11: XL_INT });
   styleHeaderRow(ws1, activeRows[0].length);
   XLSX.utils.book_append_sheet(wb, ws1, 'Active Trades');
 
@@ -1407,6 +1438,9 @@ async function exportExcel() {
   });
   const ws2 = XLSX.utils.aoa_to_sheet(histRows);
   ws2['!cols'] = colW([8,6,9,5,14,10,10,13,11,12,12,12,6]);
+  // Strike, Qty, Total Premium, Buy Price, P&L, ROI, Days Open, Rolls
+  applyNumberFormats(ws2, histRows.length - 1,
+    { 2: XL_MONEY, 3: XL_INT, 4: XL_MONEY, 5: XL_MONEY, 6: XL_MONEY, 7: XL_PCT, 8: XL_INT, 12: XL_INT });
   styleHeaderRow(ws2, histRows[0].length);
   XLSX.utils.book_append_sheet(wb, ws2, 'Trade History');
 
@@ -1445,11 +1479,30 @@ async function exportExcel() {
   }
   const ws3 = XLSX.utils.aoa_to_sheet(monthRows);
   ws3['!cols'] = colW([20,8,11,14,15,9,12]);
+  // Trades, P&L, ROI, Avg Days Open, Expired, Closed Early
+  applyNumberFormats(ws3, monthRows.length - 1,
+    { 1: XL_INT, 2: XL_MONEY, 3: XL_PCT, 4: XL_INT, 5: XL_INT, 6: XL_INT });
   styleHeaderRow(ws3, monthRows[0].length);
   XLSX.utils.book_append_sheet(wb, ws3, 'Monthly Analysis');
 
   /* ── Download ── */
   XLSX.writeFile(wb, `options-tracker-${date}.xlsx`);
+}
+
+/* Number formats for the exported sheets, so a workbook reads the same way
+   the app does: grouped thousands, two decimals on money and percentages.
+   Cells stay real numbers — only their display format is set. */
+const XL_MONEY = '#,##0.00';
+const XL_PCT   = '#,##0.00';
+const XL_INT   = '#,##0';
+
+function applyNumberFormats(ws, rowCount, formats) {
+  Object.entries(formats).forEach(([col, fmt]) => {
+    for (let r = 1; r <= rowCount; r++) {
+      const cell = ws[XLSX.utils.encode_cell({ r, c: +col })];
+      if (cell && cell.t === 'n') cell.z = fmt;   // leave '—' placeholders alone
+    }
+  });
 }
 
 /* Apply bold + background to the first (header) row */
@@ -2060,7 +2113,7 @@ function buildResultCardHTML(r, idx) {
   const expLabel = r.expDate
     ? 'Exp ' + new Date(r.expDate + 'T00:00:00').toLocaleDateString()
     : (r.dte ? `${esc(r.dte)}d` : '');
-  const detected = [esc(r.ticker), esc(r.type?.toUpperCase()), r.strike ? `$${esc(r.strike)}` : '', expLabel]
+  const detected = [esc(r.ticker), esc(r.type?.toUpperCase()), r.strike ? fmtMoney(r.strike) : '', expLabel]
     .filter(Boolean).join(' · ') || 'No data detected';
 
   // Confidence warnings
@@ -2074,7 +2127,7 @@ function buildResultCardHTML(r, idx) {
   let linkBox = '';
   if (r.action === 'close_trade' || r.action === 'roll') {
     const opts = active.length
-      ? active.map(t => `<option value="${esc(t.id)}">${esc(t.ticker)} ${esc(t.type.toUpperCase())} $${currentStrike(t)} · ${totalPremiums(t).toFixed(2)} prem</option>`).join('')
+      ? active.map(t => `<option value="${esc(t.id)}">${esc(t.ticker)} ${esc(t.type.toUpperCase())} ${fmtMoney(currentStrike(t))} · ${fmtMoney(totalPremiums(t))} prem</option>`).join('')
       : `<option value="">— no active trades —</option>`;
     const lbl = r.action === 'roll' ? 'Link to existing trade being rolled' : 'Select trade being closed';
     linkBox = `

@@ -38,6 +38,25 @@ each trade counts by the dollars it committed for the days it was open:
 ROI% = 365 × Σ profit / Σ (strike × 100 × contracts × days open) × 100
 ```
 
+## Number formatting
+
+Every figure the app renders goes through one set of helpers in `app.js`, so the
+same value reads the same way on every screen:
+
+| Kind | Format | Example |
+|---|---|---|
+| Money — strikes, premiums, income, committed capital | grouped, always 2 dp | `$100,000.00` |
+| P&L — anything that can be a profit or a loss | as above, with a sign | `+$1,234.56` / `-$1,234.56` |
+| Percentages — every ROI | grouped, always 2 dp | `12.35%` |
+| Counts — days, contracts, trades | grouped integer | `1,095d` |
+
+Grouping is pinned to `en-US` rather than the device locale, because the `$` is
+hardcoded — a phone that groups with dots would otherwise render ten thousand
+dollars as `$10.000`. Rounding happens before the sign is chosen, so a value like
+`-0.001` shows as `+$0.00` rather than `-$0.00`. The Excel export carries matching
+number formats (`#,##0.00`) on its numeric columns, so a downloaded workbook reads
+the same way as the app.
+
 ## Offline
 
 Trades live in `localStorage` and the service worker keeps a copy of the app itself,
