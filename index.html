@@ -63,6 +63,21 @@
       margin-bottom:10px;
     }
     .stats-bar-label{font-size:9px;color:var(--text3);letter-spacing:.12em;text-transform:uppercase}
+    .offline-pill{
+      display:none;margin-left:6px;padding:2px 7px;border-radius:20px;
+      background:var(--amber-dim);color:var(--amber);
+      border:1px solid rgba(160,96,16,.25);
+      font-size:8px;letter-spacing:.1em;
+    }
+    .offline-pill.show{display:inline-block}
+    .offline-note{
+      display:none;background:rgba(160,96,16,.07);
+      border:1px solid rgba(160,96,16,.2);border-radius:10px;
+      padding:10px 12px;margin-bottom:14px;
+      font-size:10px;color:var(--amber);line-height:1.6;
+    }
+    .offline-note.show{display:block}
+    .offline-note b{color:var(--text2)}
     .refresh-btn{
       display:flex;align-items:center;gap:5px;
       background:var(--card);border:1px solid var(--border);
@@ -764,7 +779,10 @@
     <div class="tab-pane active" id="tab-portfolio">
       <div class="stats-bar">
         <div class="stats-bar-hdr">
-          <div class="stats-bar-label">Options Tracker</div>
+          <div class="stats-bar-label">
+            Options Tracker
+            <span class="offline-pill" id="offline-pill" title="No connection — your trades are stored on this device and keep working">Offline</span>
+          </div>
           <button class="refresh-btn" id="refresh-btn" onclick="hardRefresh()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             Update App
@@ -772,9 +790,9 @@
         </div>
         <div class="stats-grid">
           <div class="stat-card">
-            <div class="stat-label">Realized P&amp;L</div>
-            <div class="stat-value neu" id="s-pnl">$0.00</div>
-            <div class="stat-sub" id="s-pnl-sub">0 closed</div>
+            <div class="stat-label">Realized P&amp;L · YTD</div>
+            <div class="stat-value neu" id="s-pnl-ytd">$0.00</div>
+            <div class="stat-sub" id="s-pnl-sub">all-time $0 · 0 closed</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">Overall ROI</div>
@@ -1012,6 +1030,12 @@
         <div class="page-hdr">
           <div class="page-title">Scan</div>
           <div class="page-sub">import from brokerage screenshots</div>
+        </div>
+
+        <div class="offline-note" id="scan-offline-note">
+          <b>You're offline.</b> Everything on this page still works from stored data —
+          batch entry, export, import. Screenshot scanning and Excel export need a
+          connection the first time they run, then they keep working offline too.
         </div>
 
         <!-- hidden file input -->

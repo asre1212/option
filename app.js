@@ -79,6 +79,15 @@ function annualizedROI(trades) {
   return capDays > 0 ? (profit / capDays) * 365 * 100 : 0;
 }
 
+// Realized P&L booked in the current calendar year — a trade counts in the
+// year it closed (falling back to when it was opened for legacy records).
+function ytdPnL(closedTrades) {
+  const yr = String(new Date().getFullYear());
+  return closedTrades
+    .filter(t => String(t.closeInfo?.dateClosed || t.dateOpened || '').slice(0, 4) === yr)
+    .reduce((s, t) => s + tradePnL(t), 0);
+}
+
 function weightedStats() {
   const closed = load().trades.filter(t => t.status !== 'active');
   if (!closed.length) return { roi:0, monthly:0, pnl:0 };
@@ -961,11 +970,14 @@ function updateStats() {
   const closed = d.trades.filter(t => t.status !== 'active');
   const { roi, pnl } = weightedStats();
 
-  // P&L
-  const pnlEl = document.getElementById('s-pnl');
-  pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
-  pnlEl.className   = 'stat-value ' + (pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : 'neu');
-  document.getElementById('s-pnl-sub').textContent = closed.length + ' closed';
+  // P&L — this year's realized total leads, all-time sits underneath
+  const ytd   = ytdPnL(closed);
+  const pnlEl = document.getElementById('s-pnl-ytd');
+  pnlEl.textContent = (ytd >= 0 ? '+$' : '-$') + Math.abs(ytd).toFixed(2);
+  pnlEl.className   = 'stat-value ' + (ytd > 0 ? 'pos' : ytd < 0 ? 'neg' : 'neu');
+  document.getElementById('s-pnl-sub').textContent =
+    `all-time ${pnl >= 0 ? '+$' : '-$'}${Math.abs(pnl).toLocaleString(undefined,{maximumFractionDigits:0})}`
+    + ` · ${closed.length} closed`;
 
   // ROI
   const roiEl = document.getElementById('s-roi');
@@ -1473,9 +1485,29 @@ if ('serviceWorker' in navigator) {
 }
 
 /* ═══════════════════════════════════════
+   OFFLINE STATE
+   Trades live in localStorage and the app shell is cached by the
+   service worker, so everything core keeps working with no connection.
+   Surface that state rather than letting features fail silently.
+═══════════════════════════════════════ */
+function renderOnlineState() {
+  const offline = navigator.onLine === false;
+  document.getElementById('offline-pill')?.classList.toggle('show', offline);
+  document.getElementById('scan-offline-note')?.classList.toggle('show', offline);
+}
+window.addEventListener('online',  renderOnlineState);
+window.addEventListener('offline', renderOnlineState);
+
+/* ═══════════════════════════════════════
    HARD REFRESH (pull latest from GitHub)
 ═══════════════════════════════════════ */
 function hardRefresh() {
+  // Updating means re-downloading the app; offline it would only clear the
+  // cache the app is currently running from.
+  if (navigator.onLine === false) {
+    alert('You\'re offline — the app is running from its cached copy. Reconnect and try Update App again.');
+    return;
+  }
   const btn = document.getElementById('refresh-btn');
   btn.classList.add('spinning');
   btn.disabled = true;
@@ -2225,6 +2257,7 @@ if (navigator.storage && navigator.storage.persist) {
 renderActive();
 updateStats();
 updateLastExportLabel();
+renderOnlineState();
 
 // Handle ?tab= from manifest shortcuts
 (function(){
