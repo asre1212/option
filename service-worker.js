@@ -8,7 +8,7 @@
    connection, once each has been fetched successfully one time.
 ───────────────────────────────────────── */
 
-const CACHE_VERSION  = 'options-tracker-v4';
+const CACHE_VERSION  = 'options-tracker-v5';
 const RUNTIME_CACHE  = 'options-tracker-runtime-v1';
 const CACHE_ASSETS   = [
   './',
@@ -21,7 +21,9 @@ const CACHE_ASSETS   = [
 
 // Cross-origin hosts whose responses may be kept for offline use. Every URL
 // served from these is either version-pinned or immutable, so a stored copy
-// never goes stale; anything not listed here is left entirely alone.
+// never goes stale; anything not listed here is left entirely alone — the
+// watchlist quote feeds included, since a cached price is a wrong price. The
+// app keeps its own copy of the last quotes in localStorage instead.
 const RUNTIME_HOSTS = [
   'fonts.googleapis.com',    // webfont stylesheet
   'fonts.gstatic.com',       // webfont files
