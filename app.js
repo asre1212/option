@@ -225,6 +225,34 @@ function closeEarlyBreakeven(t) {
   return { price: totalPremiums(t) * (left / span), span, left, elapsed: span - left };
 }
 
+/* The rate an open position is running at, and the one number every "should I
+   close this?" comparison is made against. A plain position keeps the rate it
+   was written at; once rolled, the accumulated premium is measured over the
+   real span from opening to the current expiration. Both the card and the
+   watchlist's suggestions read this, so they can never disagree. */
+function positionRate(t) {
+  if (t.rolls && t.rolls.length) {
+    const span = Math.max(1, daysBetween(t.dateOpened, currentExpDate(t)));
+    return roiPct(totalPremiums(t), currentStrike(t), span);
+  }
+  return numOr0(t.roiAtExecution);
+}
+
+/* The same question with somewhere to put the money. Holding to expiry earns
+   the remaining premium and nothing else; closing frees the capital, which
+   can then earn altROI annualized for the days that were left. So the price
+   worth paying to get out rises by what that capital would make elsewhere:
+
+     buy-back price = premium × remaining/span  +  strike × altROI × remaining/365
+
+   Capital per share is the strike, so both terms are per share and comparable
+   to a quoted option price. With altROI = 0 this is closeEarlyBreakeven(). */
+function switchBreakeven(t, altROI) {
+  const be  = closeEarlyBreakeven(t);
+  const alt = currentStrike(t) * (numOr0(altROI) / 100) * (be.left / 365);
+  return { ...be, alt, altPrice: be.price + alt };
+}
+
 /* ═══════════════════════════════════════
    UI STATE
 ═══════════════════════════════════════ */
@@ -234,14 +262,22 @@ let calcTypeVal = 'put';
 /* ═══════════════════════════════════════
    TAB SWITCHING
 ═══════════════════════════════════════ */
+let currentTab = 'portfolio';
+
+// Tabs with an add button of their own, and what it opens
+const FAB_TABS = { portfolio: openAddModal, watch: openWatchAdd };
+
+function fabAction() { (FAB_TABS[currentTab] || openAddModal)(); }
+
 function switchTab(tab) {
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('tab-' + tab).classList.add('active');
   document.getElementById('n-' + tab).classList.add('active');
-  document.getElementById('fab').style.display = tab === 'portfolio' ? 'flex' : 'none';
+  currentTab = tab;
+  document.getElementById('fab').style.display = FAB_TABS[tab] ? 'flex' : 'none';
   if (tab === 'portfolio') { renderActive(); updateStats(); }
-  if (tab === 'history')   { renderHistory(); }
+  if (tab === 'watch')     { renderWatchlist(); checkMarketSchedule(); }
   if (tab === 'roi')       { renderCalcAverages(); }
   if (tab === 'analysis')  { renderAnalysis(); }
   if (tab === 'scan')      { /* ready — user taps the upload zone */ }
@@ -1298,15 +1334,20 @@ function confirmDelete() {
     const dd = load();
     dd.trades.splice(Math.min(idx, dd.trades.length), 0, removed);
     save(dd);
-    renderActive(); updateStats(); renderHistory();
+    renderActive(); updateStats();
   });
 }
 
 /* ═══════════════════════════════════════
    RENDER: ACTIVE TRADES
 ═══════════════════════════════════════ */
+// The best watchlist candidate, resolved once per render rather than once
+// per card — every open position is measured against the same alternative.
+let _altBest = null;
+
 function renderActive() {
   const d = load();
+  _altBest = bestCandidate();
   const trades = d.trades.filter(t => t.status === 'active');
   document.getElementById('active-count').textContent = trades.length + ' position' + (trades.length !== 1 ? 's' : '');
   const el = document.getElementById('active-list');
@@ -1394,11 +1435,10 @@ function positionCardHTML(p, d) {
 
 function tradeCardHTML(t) {
   const tp  = totalPremiums(t);
-  const td  = Math.max(1, daysBetween(t.dateOpened, currentExpDate(t)));
   const cs  = currentStrike(t);
   const q   = tradeQty(t);
   const rolled = t.rolls && t.rolls.length > 0;
-  const roi = rolled ? roiPct(tp, cs, td) : t.roiAtExecution;
+  const roi = positionRate(t);
   const dr  = daysRemaining(t);
   const drVal = dr < 0 ? 'past exp' : fmtInt(dr) + 'd';
   const drCls = dr <= 5 ? ' red' : '';
@@ -1410,6 +1450,18 @@ function tradeCardHTML(t) {
     <div class="tc-hint${be.elapsed / be.span >= 0.5 ? ' good' : ''}">
       Buy back at <b>${fmtMoney(be.price)}</b> or less and closing now beats holding
       to expiry — ${fmtInt(be.elapsed)} of ${fmtInt(be.span)} days done, ${fmtInt(be.left)} left.
+    </div>` : '';
+
+  // The same call with somewhere better to put the money: when the watchlist
+  // holds a candidate clearly beating this position's rate, the price worth
+  // paying to get out rises by whatever that capital would earn there instead.
+  // Same ticker is not a rotation, and a thin edge does not cover two spreads.
+  const alt = _altBest;
+  const altHTML = (alt && be.left > 0 && tradeCapital(t) > 0
+                   && alt.ticker !== t.ticker && alt.roi >= roi * MIN_SWITCH_EDGE) ? `
+    <div class="tc-hint" style="margin-top:-4px">
+      Or up to <b>${fmtMoney(switchBreakeven(t, alt.roi).altPrice)}</b> if you roll the capital
+      into <b>${esc(alt.ticker)}</b> ${fmtMoney(alt.strike)}p at ${fmtPct(alt.roi)}.
     </div>` : '';
 
   const rollHistHTML = rolled ? `
@@ -1464,6 +1516,7 @@ function tradeCardHTML(t) {
       </div>
     </div>
     ${hintHTML}
+    ${altHTML}
     ${rollHistHTML}
     <div class="tc-actions">
       <button class="act-btn grn" onclick="openExpire('${t.id}')">Expired</button>
@@ -1537,118 +1590,6 @@ function renderBackupReminder() {
         <button class="br-btn" onclick="sessionStorage.setItem('opts_backup_reminder_dismissed','1');renderBackupReminder()">Later</button>
       </div>
     </div>`;
-}
-
-/* ═══════════════════════════════════════
-   RENDER: HISTORY
-═══════════════════════════════════════ */
-function renderHistory() {
-  const items = realizedItems().sort((a,b) => new Date(b.date) - new Date(a.date));
-  const { roi, monthly, pnl } = weightedStats();
-
-  const hp = document.getElementById('h-pnl');
-  hp.textContent = fmtSigned(pnl);
-  hp.className   = 'sum-val ' + (pnl>0?'green':pnl<0?'red':'');
-
-  const hr = document.getElementById('h-roi');
-  hr.textContent = items.length ? fmtPct(roi) : '—';
-  hr.className   = 'sum-val ' + (roi>0?'green':roi<0?'red':'');
-
-  const hm = document.getElementById('h-monthly');
-  hm.textContent = items.length ? fmtPct(monthly) : '—';
-  hm.className   = 'sum-val amber';
-
-  const el = document.getElementById('history-list');
-  if (!items.length) {
-    el.innerHTML = `<div class="empty"><div class="empty-txt">No closed trades yet</div></div>`;
-    return;
-  }
-  el.innerHTML = items.map(i => i.kind === 'shares' ? shareHistCardHTML(i) : optionHistCardHTML(i)).join('');
-}
-
-function optionHistCardHTML(i) {
-  const t   = i.ref;
-  const tp  = totalPremiums(t);
-  const cs  = currentStrike(t);
-  const ad  = i.days;
-  const pnl = i.pnl;
-  const profPS = t.status === 'closed_early' ? tp - (t.closeInfo?.buyingPrice||0) : tp;
-  const roi = roiPct(profPS, cs, ad);
-  const rolled = t.rolls && t.rolls.length;
-  const q = tradeQty(t);
-  const stateTxt = t.status === 'expired' ? 'Expired' : t.status === 'assigned' ? 'Assigned' : 'Closed';
-  const stateCls = t.status === 'expired' ? 'green' : t.status === 'assigned' ? 'blue' : 'amber';
-  return `<div class="hist-card">
-    <div class="hc-row1">
-      <div>
-        <div class="hc-ticker">${esc(t.ticker)}</div>
-        <div class="hc-meta-lbl">${esc(t.type.toUpperCase())} · ${fmtMoney(cs)}${q>1?' ×'+fmtInt(q):''} · ${esc(t.dateOpened)}${t.closeInfo?.dateClosed?' → '+esc(t.closeInfo.dateClosed):''}</div>
-      </div>
-      <div>
-        <div class="hc-pnl ${pnl>=0?'green':'red'}">${fmtSigned(pnl)}</div>
-        <div class="hc-roi">${fmtPct(roi)} ROI</div>
-      </div>
-    </div>
-    <div class="hc-grid">
-      <div class="hc-item">
-        <div class="hc-item-lbl">Status</div>
-        <div class="hc-item-val ${stateCls}">${stateTxt}</div>
-      </div>
-      <div class="hc-item">
-        <div class="hc-item-lbl">Premiums</div>
-        <div class="hc-item-val">${fmtMoney(tp)}</div>
-      </div>
-      <div class="hc-item">
-        <div class="hc-item-lbl">Days</div>
-        <div class="hc-item-val">${fmtInt(ad)}d</div>
-      </div>
-      <div class="hc-item">
-        <div class="hc-item-lbl">Rolls</div>
-        <div class="hc-item-val">${rolled ? fmtInt(rolled)+'×' : '—'}</div>
-      </div>
-    </div>
-  </div>`;
-}
-
-// A completed wheel leg: shares acquired by assignment and later sold or
-// called away. P&L here is the stock move; the premiums that lowered the
-// basis are shown alongside, already counted on their own option legs.
-function shareHistCardHTML(i) {
-  const p     = i.ref;
-  const prem  = positionPremiums(p);
-  const cycle = i.pnl + prem;
-  const roi   = positionCapital(p) > 0
-    ? (cycle / positionCapital(p)) * (365 / i.days) * 100 : 0;
-  return `<div class="hist-card" style="border-left:3px solid var(--blue)">
-    <div class="hc-row1">
-      <div>
-        <div class="hc-ticker">${esc(p.ticker)}</div>
-        <div class="hc-meta-lbl">${fmtInt(p.shares)} SHARES · ${fmtMoney(p.costBasis)} → ${fmtMoney(p.closeInfo?.pricePerShare||0)} · ${esc(p.dateAcquired)} → ${esc(p.closeInfo?.dateClosed||'')}</div>
-      </div>
-      <div>
-        <div class="hc-pnl ${cycle>=0?'green':'red'}">${fmtSigned(cycle)}</div>
-        <div class="hc-roi">${fmtPct(roi)} cycle ROI</div>
-      </div>
-    </div>
-    <div class="hc-grid">
-      <div class="hc-item">
-        <div class="hc-item-lbl">Status</div>
-        <div class="hc-item-val blue">${p.closeInfo?.reason === 'called_away' ? 'Called Away' : 'Sold'}</div>
-      </div>
-      <div class="hc-item">
-        <div class="hc-item-lbl">Stock</div>
-        <div class="hc-item-val ${i.pnl>=0?'green':'red'}">${fmtSigned(i.pnl)}</div>
-      </div>
-      <div class="hc-item">
-        <div class="hc-item-lbl">Premiums</div>
-        <div class="hc-item-val">${fmtMoney(prem)}</div>
-      </div>
-      <div class="hc-item">
-        <div class="hc-item-lbl">Held</div>
-        <div class="hc-item-val">${fmtInt(i.days)}d</div>
-      </div>
-    </div>
-  </div>`;
 }
 
 /* ═══════════════════════════════════════
@@ -1847,6 +1788,31 @@ function groupRowHTML(g) {
   </div>`;
 }
 
+/* The per-position detail the History tab used to carry, folded into the
+   month the position closed in: what was written, what it earned, how long
+   the capital was actually tied up, and what that annualizes to. */
+function closedItemMeta(i) {
+  if (i.kind === 'shares') {
+    const p     = i.ref;
+    const prem  = positionPremiums(p);
+    const cycle = i.pnl + prem;
+    const roi   = positionCapital(p) > 0 ? (cycle / positionCapital(p)) * (365 / i.days) * 100 : 0;
+    return `${fmtMoney(p.costBasis)} → ${fmtMoney(p.closeInfo?.pricePerShare || 0)}
+      · stock <b>${fmtSigned(i.pnl)}</b> + premiums <b>${fmtMoney(prem)}</b>
+      · ${fmtInt(i.days)}d · <b>${fmtPct(roi)}</b> cycle ROI
+      · ${esc(p.dateAcquired)} → ${esc(p.closeInfo?.dateClosed || '')}`;
+  }
+  const t     = i.ref;
+  const tp    = totalPremiums(t);
+  const perSh = t.status === 'closed_early' ? tp - (t.closeInfo?.buyingPrice || 0) : tp;
+  const roi   = roiPct(perSh, currentStrike(t), i.days);
+  const rolls = (t.rolls || []).length;
+  return `premium <b>${fmtMoney(tp)}</b>${t.status === 'closed_early'
+      ? ` less <b>${fmtMoney(t.closeInfo?.buyingPrice || 0)}</b> bought back` : ''}
+    · ${fmtInt(i.days)}d · <b>${fmtPct(roi)}</b> ann. ROI${rolls ? ` · rolled ${fmtInt(rolls)}×` : ''}
+    · ${esc(t.dateOpened)} → ${esc(tradeEndDate(t))}`;
+}
+
 function renderAnalysis() {
   const d      = load();
   const items  = realizedItems(d);
@@ -1858,21 +1824,22 @@ function renderAnalysis() {
     return;
   }
 
-  const { monthly: overallMonthly, pnl: overallPnL } = weightedStats();
+  const { roi: overallROI, monthly: overallMonthly, pnl: overallPnL } = weightedStats();
   const wins    = items.filter(i => i.pnl > 0).length;
   const avgDays = items.length ? items.reduce((s,i) => s + i.days, 0) / items.length : 0;
+  const ytd     = ytdPnL(items);
 
   let html = `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
       <div class="stat-card">
         <div class="stat-label">Total Realized P&L</div>
         <div class="stat-value ${overallPnL>=0?'pos':'neg'}">${fmtSigned(overallPnL)}</div>
-        <div class="stat-sub">${fmtInt(items.length)} closed</div>
+        <div class="stat-sub">${fmtSigned(ytd)} YTD · ${fmtInt(items.length)} closed</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Avg Monthly ROI</div>
         <div class="stat-value ${overallMonthly>=0?'pos':'neg'}">${fmtPct(overallMonthly)}</div>
-        <div class="stat-sub">weighted by capital-days</div>
+        <div class="stat-sub">${items.length ? fmtPct(overallROI) + ' annualized' : 'weighted by capital-days'}</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Win Rate</div>
@@ -1930,11 +1897,9 @@ function renderAnalysis() {
 
   /* ── Capital efficiency: what to close first ── */
   if (active.length) {
-    const ranked = active.map(t => {
-      const span = Math.max(1, daysBetween(t.dateOpened, currentExpDate(t)));
-      return { t, capital: tradeCapital(t),
-               roi: roiPct(totalPremiums(t), currentStrike(t), span) };
-    }).sort((a,b) => b.roi - a.roi);
+    const ranked = active
+      .map(t => ({ t, capital: tradeCapital(t), roi: positionRate(t) }))
+      .sort((a,b) => b.roi - a.roi);
     html += `<div class="bt-preview-hdr">Capital Efficiency</div>`;
     // Only call something the weakest when it is actually behind the best —
     // on a tie there is nothing to single out.
@@ -2001,13 +1966,915 @@ function renderAnalysis() {
             ? (r.closeInfo?.reason === 'called_away' ? 'called away' : 'sold')
             : (r.status === 'expired' ? 'exp' : r.status === 'assigned' ? 'assigned' : 'closed');
           return `<div class="mc-trade-row">
-            <div><b>${esc(i.ticker)}</b><span class="muted"> · ${label}</span></div>
-            <div><span class="${i.pnl>=0?'green':'red'}">${fmtSigned(i.pnl)}</span>
-              <span class="muted"> · ${state}</span></div>
+            <div class="mc-trade-top">
+              <div><b>${esc(i.ticker)}</b><span class="muted"> · ${label}</span></div>
+              <div><span class="${i.pnl>=0?'green':'red'}">${fmtSigned(i.pnl)}</span>
+                <span class="muted"> · ${state}</span></div>
+            </div>
+            <div class="mc-trade-meta">${closedItemMeta(i)}</div>
           </div>`;}).join('')}
       </div>
     </div>`;
   });
+  el.innerHTML = html;
+}
+
+/* ═══════════════════════════════════════
+   WATCHLIST — MARKET DATA
+   Names you are thinking about selling puts on. For each one the app wants
+   three things: where the stock is, what it did today, and what the market
+   is paying for a put roughly 45 days out at 5% and 10% below spot — with
+   the same annualized ROI the rest of the app measures trades by, so a
+   candidate can be compared against what you already hold.
+
+   Quotes come from public delayed feeds, tried in order, and the last good
+   answer for each ticker is kept in localStorage so the tab is never blank
+   and works offline. Nothing here is a fill — see the note on the tab.
+═══════════════════════════════════════ */
+const MARKET_KEY   = 'opts_market_v1';
+const PROXY_KEY    = 'opts_quote_proxy';
+const TARGET_DTE   = 45;   // the term this strategy is written at
+const DTE_WINDOW   = 7;    // an expiration this far either side still counts
+const OTM_TARGETS  = [5, 10];
+const MAX_WATCH    = 40;
+const STALE_DAYS   = 4;    // beyond this a stored quote stops driving advice
+const MIN_SWITCH_EDGE = 1.25;   // a candidate must beat a position by this much to be worth the swap
+
+const loadMarket = () => {
+  try { return JSON.parse(localStorage.getItem(MARKET_KEY)) || {} } catch (e) { return {} }
+};
+const saveMarket = m => {
+  try { localStorage.setItem(MARKET_KEY, JSON.stringify(m)) } catch (e) { /* quota — quotes are disposable */ }
+};
+const marketQuotes = () => loadMarket().quotes || {};
+
+// The watchlist itself lives with the trades, so it travels in a backup —
+// as does the note against each ticker. Quotes deliberately do not: they are
+// derived, they go stale, and a backup should not carry yesterday's prices.
+const loadWatchlist  = d => ((d || load()).watchlist || []).slice();
+const loadWatchNotes = d => ((d || load()).watchNotes) || {};
+
+function saveWatchlist(list) {
+  const d = load();
+  d.watchlist = list;
+  save(d);
+}
+function saveWatchNote(tk, note) {
+  const d = load();
+  d.watchNotes = d.watchNotes || {};
+  const txt = String(note || '').trim().slice(0, 80);
+  if (txt) d.watchNotes[tk] = txt; else delete d.watchNotes[tk];
+  save(d);
+}
+
+/* ── Preferences ──
+   How the list is ordered, and the annualized yield worth being told about. */
+const SORT_KEY   = 'opts_wl_sort';
+const TARGET_KEY = 'opts_wl_target';
+
+const watchSort   = () => (localStorage.getItem(SORT_KEY) === 'roi' ? 'roi' : 'added');
+const watchTarget = () => { const n = parseFloat(localStorage.getItem(TARGET_KEY)); return n > 0 ? n : null; };
+
+function toggleWatchSort() {
+  localStorage.setItem(SORT_KEY, watchSort() === 'roi' ? 'added' : 'roi');
+  renderWatchlist();
+}
+
+function configureWatchTarget() {
+  const cur = watchTarget();
+  const val = prompt(
+    'Annualized ROI worth being told about, as a percentage.\n\n'
+    + 'Cards at or above it are marked, and — with expiry reminders switched on — a\n'
+    + 'scheduled update will notify you when one crosses it.\n\n'
+    + 'Leave blank to switch it off.', cur == null ? '' : String(cur));
+  if (val === null) return;
+  const v = val.trim();
+  if (!v) { localStorage.removeItem(TARGET_KEY); renderWatchlist(); return; }
+  const n = parseFloat(v);
+  if (!(n > 0) || n > 1000) { alert('Enter a percentage between 0 and 1000, e.g. 20'); return; }
+  localStorage.setItem(TARGET_KEY, String(n));
+  renderWatchlist();
+}
+
+// The best leg on a card, which is what the target is measured against
+function bestLeg(q) {
+  if (!q || !q.legs) return null;
+  return q.legs.reduce((b, l) => (!l.missing && l.roi > 0 && (!b || l.roi > b.roi)) ? l : b, null);
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* ── Fetching ──
+   A quote feed that hangs is worse than one that fails, so every request is
+   bounded. An optional user-supplied CORS proxy is tried only as a second
+   pass, after a direct request has already failed. */
+function quoteProxy() { return localStorage.getItem(PROXY_KEY) || ''; }
+
+function apiURL(url, viaProxy) {
+  const p = quoteProxy();
+  return (viaProxy && p) ? p + encodeURIComponent(url) : url;
+}
+
+function fetchJSON(url, viaProxy, ms = 12000) {
+  const ctl   = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = setTimeout(() => { try { ctl && ctl.abort() } catch (e) {} }, ms);
+  return fetch(apiURL(url, viaProxy), { cache: 'no-store', mode: 'cors', signal: ctl ? ctl.signal : undefined })
+    .then(r => {
+      if (r.status === 429) throw Object.assign(new Error('rate limited'), { rateLimited: true });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .finally(() => clearTimeout(timer));
+}
+
+const numOrNull = v => { const n = parseFloat(v); return isFinite(n) ? n : null; };
+
+/* ── OCC option symbols ──
+   AAPL260220P00150000 → Feb 20 2026 put, $150 strike. The last 15 characters
+   are fixed-width, so read from the end and whatever precedes them is the
+   root — roots contain digits often enough that reading from the front is
+   not safe. */
+function parseOcc(sym) {
+  const s = String(sym || '').replace(/\s+/g, '').toUpperCase();
+  const m = /^(.+?)(\d{6})([CP])(\d{8})$/.exec(s);
+  if (!m) return null;
+  const [, root, ymd, cp, strike] = m;
+  return {
+    root,
+    expiry: `20${ymd.slice(0,2)}-${ymd.slice(2,4)}-${ymd.slice(4,6)}`,
+    type:   cp === 'P' ? 'put' : 'call',
+    strike: parseInt(strike, 10) / 1000
+  };
+}
+
+const isoFromUnix = s => new Date(numOr0(s) * 1000).toISOString().slice(0, 10);
+
+/* ── Provider: Cboe delayed quotes ──
+   One request returns the underlying and its whole option chain, which is
+   exactly the shape this tab needs. */
+const CBOE_INDEX = ['SPX','VIX','NDX','RUT','DJX','XSP','OEX','XEO'];
+const cboeSymbol = t => (CBOE_INDEX.includes(t) ? '_' + t : t.replace(/\./g, ''));
+
+async function providerCboe(ticker, viaProxy) {
+  const j = await fetchJSON(
+    `https://cdn.cboe.com/api/global/delayed_quotes/options/${encodeURIComponent(cboeSymbol(ticker))}.json`,
+    viaProxy);
+  const d = j && j.data;
+  if (!d || !Array.isArray(d.options)) throw new Error('unexpected response');
+  const price = numOrNull(d.current_price) ?? numOrNull(d.last_trade_price) ?? numOrNull(d.close);
+  if (price == null || price <= 0) throw new Error('no price');
+  const chain = [];
+  d.options.forEach(o => {
+    const p = parseOcc(o.option);
+    if (!p || p.type !== 'put') return;
+    chain.push({
+      expiry: p.expiry, strike: p.strike,
+      bid:  numOrNull(o.bid)  ?? 0,
+      ask:  numOrNull(o.ask)  ?? 0,
+      last: numOrNull(o.last_trade_price) ?? 0,
+      oi:   numOrNull(o.open_interest) ?? 0
+    });
+  });
+  return {
+    price,
+    prevClose: numOrNull(d.prev_day_close) ?? numOrNull(d.close),
+    changePct: numOrNull(d.price_change_percent),
+    chain, source: 'Cboe'
+  };
+}
+
+/* ── Provider: Yahoo Finance ──
+   Two requests: the first gives the quote and the list of expirations, the
+   second the chain for the one expiration we actually want. */
+async function providerYahoo(ticker, viaProxy) {
+  const base = `https://query2.finance.yahoo.com/v7/finance/options/${encodeURIComponent(ticker)}`;
+  const first = await fetchJSON(base, viaProxy);
+  const res   = first?.optionChain?.result?.[0];
+  if (!res) throw new Error('unexpected response');
+  const q     = res.quote || {};
+  const price = numOrNull(q.regularMarketPrice);
+  if (price == null || price <= 0) throw new Error('no price');
+  const out = {
+    price,
+    prevClose: numOrNull(q.regularMarketPreviousClose),
+    changePct: numOrNull(q.regularMarketChangePercent),
+    chain: [], source: 'Yahoo'
+  };
+
+  const exps = (res.expirationDates || []).map(isoFromUnix);
+  const pick = pickExpiry(exps);
+  if (!pick) return out;
+  const unix = Math.floor(new Date(pick.iso + 'T00:00:00Z').getTime() / 1000);
+  const second = await fetchJSON(`${base}?date=${unix}`, viaProxy);
+  const puts   = second?.optionChain?.result?.[0]?.options?.[0]?.puts || [];
+  puts.forEach(o => {
+    const strike = numOrNull(o.strike);
+    if (strike == null || strike <= 0) return;
+    out.chain.push({
+      expiry: o.expiration ? isoFromUnix(o.expiration) : pick.iso,
+      strike,
+      bid:  numOrNull(o.bid) ?? 0,
+      ask:  numOrNull(o.ask) ?? 0,
+      last: numOrNull(o.lastPrice) ?? 0,
+      oi:   numOrNull(o.openInterest) ?? 0
+    });
+  });
+  return out;
+}
+
+/* ── Provider: Yahoo chart (price only) ──
+   Last resort. A card with a price and no premiums is still worth showing —
+   the premiums can be typed in by hand. */
+async function providerYahooPrice(ticker, viaProxy) {
+  const j = await fetchJSON(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=5d&interval=1d`,
+    viaProxy);
+  const meta = j?.chart?.result?.[0]?.meta;
+  const price = numOrNull(meta?.regularMarketPrice);
+  if (price == null || price <= 0) throw new Error('no price');
+  return {
+    price,
+    prevClose: numOrNull(meta.chartPreviousClose) ?? numOrNull(meta.previousClose),
+    changePct: null, chain: [], source: 'Yahoo (price only)'
+  };
+}
+
+const PROVIDERS = [
+  { name: 'Cboe',   fn: providerCboe },
+  { name: 'Yahoo',  fn: providerYahoo },
+  { name: 'Yahoo·px', fn: providerYahooPrice }
+];
+
+/* Try each provider directly; only if every one fails do we make a second
+   pass through the configured proxy, so a working direct route is never
+   routed through someone else's server. */
+async function fetchQuote(ticker) {
+  const errs = [];
+  let backedOff = false;   // one pause per ticker, however many feeds throttle
+  for (const viaProxy of (quoteProxy() ? [false, true] : [false])) {
+    for (const p of PROVIDERS) {
+      try {
+        const r = await p.fn(ticker, viaProxy);
+        if (viaProxy) r.source += ' via proxy';
+        return r;
+      } catch (e) {
+        errs.push(`${p.name}: ${e.message || e}`);
+        if (e.rateLimited && !backedOff) { backedOff = true; await sleep(20000); }
+      }
+    }
+  }
+  throw new Error(errs.join(' · '));
+}
+
+/* ── Picking the contract ──
+   The strategy is a ~45-day put, so take the listed expiration closest to 45
+   days out, preferring one inside the ±7-day window; if the chain has nothing
+   in that window, use the closest there is and say so on the card. */
+function pickExpiry(isoList, fromISO) {
+  const from  = fromISO || todayStr();
+  const cands = Array.from(new Set(isoList))
+    .map(iso => ({ iso, dte: daysBetween(from, iso) }))
+    .filter(e => DATE_RE.test(e.iso) && e.dte > 0);
+  if (!cands.length) return null;
+  const inWindow = cands.filter(e => Math.abs(e.dte - TARGET_DTE) <= DTE_WINDOW);
+  const pool = inWindow.length ? inWindow : cands;
+  pool.sort((a,b) => Math.abs(a.dte - TARGET_DTE) - Math.abs(b.dte - TARGET_DTE) || a.dte - b.dte);
+  return { ...pool[0], offTarget: !inWindow.length };
+}
+
+// Prefer a strike at or below the target — at least as far out of the money
+// as asked for. Only when the chain has nothing below do we go the other way.
+function pickStrike(puts, target) {
+  const below = puts.filter(o => o.strike <= target);
+  const pool  = below.length ? below : puts;
+  if (!pool.length) return null;
+  return pool.slice().sort((a,b) => Math.abs(a.strike - target) - Math.abs(b.strike - target))[0];
+}
+
+// Mid of a two-sided market, else the bid, else the last trade — and always
+// say which, because a last trade on an illiquid strike can be days old.
+function legPremium(o) {
+  if (o.bid > 0 && o.ask > 0 && o.ask >= o.bid) return { premium: (o.bid + o.ask) / 2, basis: 'mid' };
+  if (o.bid > 0)  return { premium: o.bid,  basis: 'bid' };
+  if (o.last > 0) return { premium: o.last, basis: 'last' };
+  return null;
+}
+
+function buildLegs(price, chain) {
+  const exp = pickExpiry((chain || []).map(o => o.expiry));
+  if (!exp) return null;
+  const puts = chain.filter(o => o.expiry === exp.iso && o.strike > 0);
+  if (!puts.length) return null;
+  return {
+    expiry: exp.iso, dte: exp.dte, offTarget: exp.offTarget,
+    legs: OTM_TARGETS.map(pct => {
+      const o = pickStrike(puts, price * (1 - pct / 100));
+      if (!o) return { pct, missing: 'no strike' };
+      const p = legPremium(o);
+      if (!p) return { pct, strike: o.strike, missing: 'not quoted' };
+      return {
+        pct, strike: o.strike,
+        otmPct:  (price - o.strike) / price * 100,
+        premium: p.premium, basis: p.basis,
+        oi: o.oi, expiry: exp.iso, dte: exp.dte,
+        roi: roiPct(p.premium, o.strike, exp.dte)
+      };
+    })
+  };
+}
+
+/* ── Refresh ──
+   Symbols are fetched one at a time with a gap between them. A scheduled run
+   spreads itself over minutes on purpose: these are free public endpoints and
+   a burst from every open copy of the app at 9:31:00 is what gets throttled.
+   A manual refresh is a single deliberate act, so it uses a short gap. */
+const STAGGER_SCHEDULED = 9000;
+const STAGGER_MANUAL    = 1200;
+const STAGGER_JITTER    = 3000;
+
+let _wlRunning = false;
+let _wlPending = {};      // ticker → true while its request is in flight
+
+// Returns true when a fresh quote landed, so callers can tell "the feed is
+// unreachable" apart from "this one ticker is bad".
+async function refreshOne(ticker) {
+  _wlPending[ticker] = true;
+  const m = loadMarket();
+  m.quotes = m.quotes || {};
+  let ok = false;
+  try {
+    const raw  = await fetchQuote(ticker);
+    const legs = raw.chain.length ? buildLegs(raw.price, raw.chain) : null;
+    const chg  = raw.changePct != null ? raw.changePct
+      : (raw.prevClose > 0 ? (raw.price - raw.prevClose) / raw.prevClose * 100 : null);
+    m.quotes[ticker] = {
+      ticker, price: raw.price, prevClose: raw.prevClose, changePct: chg,
+      source: raw.source, asOf: new Date().toISOString(),
+      expiry: legs?.expiry || null, dte: legs?.dte || null,
+      offTarget: !!legs?.offTarget, legs: legs?.legs || null,
+      error: legs ? null : 'no option chain in the response'
+    };
+    ok = true;
+  } catch (e) {
+    // Keep the last good quote — a stale price beats an empty card. Record
+    // the failure alongside it so the card can say what went wrong and when.
+    const prev = m.quotes[ticker] || { ticker };
+    m.quotes[ticker] = { ...prev, error: String(e.message || e).slice(0, 300), errorAt: new Date().toISOString() };
+  }
+  saveMarket(m);
+  delete _wlPending[ticker];
+  return ok;
+}
+
+// Returns how many tickers came back with a fresh quote.
+async function refreshWatchlist(manual, slotLabel) {
+  const list = loadWatchlist();
+  if (_wlRunning || !list.length) return 0;
+  if (navigator.onLine === false) {
+    if (manual) showToast('Offline — showing the last prices fetched', null, null, 4000);
+    return 0;
+  }
+  _wlRunning = true;
+  renderWatchlist();
+  const gap = manual ? STAGGER_MANUAL : STAGGER_SCHEDULED;
+  let fresh = 0;
+  try {
+    for (let i = 0; i < list.length; i++) {
+      if (i) await sleep(gap + Math.random() * STAGGER_JITTER);
+      if (await refreshOne(list[i])) fresh++;
+      renderWatchlist();
+    }
+  } finally {
+    _wlRunning = false;
+    if (fresh) {
+      const m = loadMarket();
+      m.lastRun = new Date().toISOString();
+      if (slotLabel) m.lastSlot = slotLabel;
+      saveMarket(m);
+    }
+    renderWatchlist();
+    renderActive();          // the close-vs-switch hints move with the quotes
+  }
+  return fresh;
+}
+
+/* ── Schedule: 9:31 am and noon, New York time ──
+   A page with no server can only act while it is open, so rather than firing
+   on a timer alone every entry point asks the same question: has a slot for
+   today gone by without a run? If it has, run it now. Opening the app at 3pm
+   catches up the most recent slot rather than replaying both.
+
+   The few minutes of stagger are per install, per day: a stable random offset
+   after the slot time, so two phones running this do not hit the same feed on
+   the same second. */
+const MARKET_SLOTS = [
+  { key: 'open', h: 9,  m: 31, label: '9:31 am ET' },
+  { key: 'noon', h: 12, m: 0,  label: '12:00 pm ET' }
+];
+const SLOT_SPREAD_MIN = 4;   // up to this many minutes late, on purpose
+
+// Wall clock in New York, whatever the device is set to
+function marketNow() {
+  const parts = {};
+  new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York', weekday: 'short', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+  }).formatToParts(new Date()).forEach(p => { parts[p.type] = p.value; });
+  const hour = parseInt(parts.hour, 10) % 24;
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    minutes: hour * 60 + parseInt(parts.minute, 10),
+    weekend: parts.weekday === 'Sat' || parts.weekday === 'Sun'
+  };
+}
+
+// A stable per-day, per-slot offset so the run lands a few minutes after the
+// hour rather than exactly on it.
+function slotOffset(m, slot) {
+  const store = loadMarket();
+  const offs  = store.offsets || {};
+  const key   = `${m.date}:${slot.key}`;
+  if (offs[key] == null) {
+    // Drop yesterday's offsets rather than growing the record forever
+    const fresh = {};
+    Object.keys(offs).forEach(k => { if (k.startsWith(m.date)) fresh[k] = offs[k]; });
+    fresh[key] = Math.floor(Math.random() * (SLOT_SPREAD_MIN + 1));
+    store.offsets = fresh;
+    saveMarket(store);
+    return fresh[key];
+  }
+  return offs[key];
+}
+
+function dueSlots() {
+  const m = marketNow();
+  if (m.weekend) return [];
+  const runs = loadMarket().runs || {};
+  return MARKET_SLOTS.filter(s =>
+    runs[s.key] !== m.date && m.minutes >= s.h * 60 + s.m + slotOffset(m, s));
+}
+
+function markSlotsRun(keys) {
+  const m = marketNow();
+  const store = loadMarket();
+  store.runs = store.runs || {};
+  keys.forEach(k => { store.runs[k] = m.date; });
+  saveMarket(store);
+}
+
+/* ── Telling you when something crosses the target ──
+   A scheduled update happens whether or not you are looking at the tab, so
+   the one that matters is worth surfacing. Reuses the notification the
+   expiry reminder already asked permission for; at most one a day, and only
+   for tickers that were not already above the line at the last run. */
+const WL_NOTICE_KEY = 'opts_wl_last_notice';
+
+async function notifyTargetHits() {
+  const target = watchTarget();
+  if (target == null || !notificationsSupported() || Notification.permission !== 'granted') return;
+
+  let seen = {};
+  try { seen = JSON.parse(localStorage.getItem(WL_NOTICE_KEY)) || {} } catch (e) {}
+  const quotes = marketQuotes();
+  const above  = [];
+  loadWatchlist().forEach(tk => {
+    const l = bestLeg(quotes[tk]);
+    if (l && l.roi >= target) above.push({ tk, roi: l.roi, strike: l.strike });
+  });
+
+  const day    = todayStr();
+  const told   = seen.date === day ? (seen.tickers || []) : [];
+  const fresh  = above.filter(a => !told.includes(a.tk)).sort((a,b) => b.roi - a.roi);
+  localStorage.setItem(WL_NOTICE_KEY, JSON.stringify({ date: day, tickers: above.map(a => a.tk) }));
+  if (!fresh.length) return;
+
+  const lead = fresh[0];
+  const body = fresh.length === 1
+    ? `${lead.tk} ${fmtMoney(lead.strike)} put — ${fmtPct(lead.roi)} annualized`
+    : `${fmtInt(fresh.length)} candidates above ${fmtPct(target)} — ${lead.tk} best at ${fmtPct(lead.roi)}`;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    await reg.showNotification('Options Tracker', {
+      body, tag: 'watchlist', icon: './icon.svg', badge: './icon.svg'
+    });
+  } catch (e) { /* a missed notification is not worth breaking the run over */ }
+}
+
+async function checkMarketSchedule() {
+  if (_wlRunning || !loadWatchlist().length) return;
+  const due = dueSlots();
+  if (!due.length) return;
+  // Missed slots are water under the bridge — one run brings everything
+  // current, so take the latest and retire the rest.
+  const run   = due[due.length - 1];
+  const fresh = await refreshWatchlist(false, run.label);
+  // A run that reached nothing at all — no connection, feeds down — leaves
+  // the slot due so the next tick tries again rather than writing the day off.
+  if (fresh) { markSlotsRun(due.map(s => s.key)); notifyTargetHits(); }
+}
+
+// Poll while the app is open; also checked on load and on returning to it
+setInterval(checkMarketSchedule, 60000);
+
+/* Human description of where the schedule stands */
+function scheduleText() {
+  const m     = marketNow();
+  const store = loadMarket();
+  const runs  = store.runs || {};
+  if (m.weekend) return 'Markets are closed for the weekend — next update Monday at <b>9:31 am ET</b>.';
+  const next = MARKET_SLOTS.find(s => runs[s.key] !== m.date);
+  const done = MARKET_SLOTS.filter(s => runs[s.key] === m.date).map(s => s.label);
+  return `Updates at <b>9:31 am</b> and <b>12:00 pm ET</b>, spread over a few minutes.`
+    + (done.length ? ` Ran today at ${done.join(' and ')}.` : '')
+    + (next ? ` Next: <b>${next.label}</b>.` : ' Both of today\'s runs are done.');
+}
+
+/* ── Watchlist edits ── */
+function openWatchAdd() {
+  const el = document.getElementById('wl-ticker');
+  if (el) el.value = '';
+  openOverlay('m-wladd');
+  setTimeout(() => { try { el && el.focus() } catch (e) {} }, 120);
+}
+
+function addWatchItem() {
+  const el = document.getElementById('wl-ticker');
+  const tk = (el.value || '').trim().toUpperCase();
+  if (!tk) return;
+  if (!TICKER_RE.test(tk)) { alert('Ticker must be 1–6 letters (A–Z), e.g. AAPL or SPY'); return; }
+  const list = loadWatchlist();
+  if (list.includes(tk)) { el.value = ''; showToast(`${tk} is already on the watchlist`, null, null, 3000); return; }
+  if (list.length >= MAX_WATCH) { alert(`The watchlist holds ${MAX_WATCH} tickers. Remove one first.`); return; }
+  list.push(tk);
+  saveWatchlist(list);
+  el.value = '';
+  closeOverlay('m-wladd');
+  renderWatchlist();
+  if (navigator.onLine !== false) refreshOne(tk).then(renderWatchlist);
+}
+
+/* Remove is a one-tap action sitting under a floating add button, so it
+   always offers a way back — the same rule the trade list follows. */
+function removeWatchItem(tk) {
+  const before = loadWatchlist();
+  const idx    = before.indexOf(tk);
+  if (idx < 0) return;
+  const note   = loadWatchNotes()[tk] || '';
+  const quote  = marketQuotes()[tk];
+
+  saveWatchlist(before.filter(x => x !== tk));
+  saveWatchNote(tk, '');
+  const m = loadMarket();
+  if (m.quotes) { delete m.quotes[tk]; saveMarket(m); }
+  renderWatchlist();
+
+  showToast(`${tk} removed from the watchlist`, 'Undo', () => {
+    const list = loadWatchlist();
+    if (!list.includes(tk)) list.splice(Math.min(idx, list.length), 0, tk);
+    saveWatchlist(list);
+    if (note) saveWatchNote(tk, note);
+    if (quote) { const mm = loadMarket(); mm.quotes = mm.quotes || {}; mm.quotes[tk] = quote; saveMarket(mm); }
+    renderWatchlist();
+  });
+}
+
+/* Some networks block these feeds outright. Rather than pretend, let the
+   quote requests be routed through a CORS proxy the user chooses — only
+   ever as a fallback, and only when they have set one. */
+function configureQuoteProxy() {
+  const cur = quoteProxy();
+  const val = prompt(
+    'Optional: a CORS proxy prefix to fall back on when a quote feed cannot be reached directly.\n\n'
+    + 'The ticker URL is appended, URL-encoded. Example:\n'
+    + 'https://corsproxy.io/?url=\n\n'
+    + 'Leave blank to use direct requests only.', cur);
+  if (val === null) return;
+  const v = val.trim();
+  if (v && !/^https:\/\//i.test(v)) { alert('The proxy must be an https:// address.'); return; }
+  if (v) localStorage.setItem(PROXY_KEY, v); else localStorage.removeItem(PROXY_KEY);
+  renderWatchlist();
+}
+
+/* ── Manual quote entry ──
+   The fallback that always works: read the numbers off your broker. */
+function openManualQuote(tk) {
+  const q = marketQuotes()[tk] || {};
+  document.getElementById('wm-ticker').value = tk;
+  document.getElementById('wm-title').textContent = tk;
+  document.getElementById('wm-note').value  = loadWatchNotes()[tk] || '';
+  document.getElementById('wm-price').value = q.price || '';
+  document.getElementById('wm-exp').value   = q.expiry || dateOffset(TARGET_DTE);
+  const l5  = (q.legs || []).find(l => l.pct === 5);
+  const l10 = (q.legs || []).find(l => l.pct === 10);
+  document.getElementById('wm-p5').value  = l5?.premium  || '';
+  document.getElementById('wm-p10').value = l10?.premium || '';
+  wlManualUpdate();
+  openOverlay('m-wlmanual');
+}
+
+// Strikes are derived so there are only four numbers to type
+function manualLegs(price, expiry, p5, p10) {
+  const dte = Math.max(1, daysBetween(todayStr(), expiry));
+  return [5, 10].map((pct, i) => {
+    const premium = i === 0 ? p5 : p10;
+    const strike  = Math.round(price * (1 - pct / 100));
+    if (!(premium > 0) || !(strike > 0)) return { pct, strike: strike || 0, missing: 'not entered' };
+    return {
+      pct, strike, otmPct: (price - strike) / price * 100,
+      premium, basis: 'manual', oi: null, expiry, dte,
+      roi: roiPct(premium, strike, dte)
+    };
+  });
+}
+
+function wlManualUpdate() {
+  const price = parseFloat(document.getElementById('wm-price').value);
+  const exp   = document.getElementById('wm-exp').value;
+  const p5    = parseFloat(document.getElementById('wm-p5').value);
+  const p10   = parseFloat(document.getElementById('wm-p10').value);
+  const val   = document.getElementById('wm-roi');
+  const form  = document.getElementById('wm-formula');
+  if (!(price > 0) || !DATE_RE.test(exp || '') || !(p5 > 0 || p10 > 0)) {
+    val.textContent  = '—';
+    form.textContent = 'enter a price, an expiration and a premium';
+    return;
+  }
+  const legs = manualLegs(price, exp, p5, p10).filter(l => !l.missing);
+  val.textContent  = legs.map(l => fmtPct(l.roi)).join('  /  ');
+  form.textContent = legs.map(l => `-${l.pct}% at ${fmtMoney(l.strike)} · ${fmtInt(l.dte)}d`).join('   ');
+}
+
+function saveManualQuote() {
+  const tk    = document.getElementById('wm-ticker').value;
+  const price = parseFloat(document.getElementById('wm-price').value);
+  const exp   = document.getElementById('wm-exp').value;
+  const p5    = parseFloat(document.getElementById('wm-p5').value);
+  const p10   = parseFloat(document.getElementById('wm-p10').value);
+
+  // The note always saves; the quote only when a price was actually typed, so
+  // editing a note never overwrites a good fetched quote with a hand one.
+  saveWatchNote(tk, document.getElementById('wm-note').value);
+  if (!(price > 0)) {
+    closeOverlay('m-wlmanual');
+    renderWatchlist();
+    return;
+  }
+  if (!DATE_RE.test(exp || '') || daysBetween(todayStr(), exp) <= 0) {
+    alert('Enter an expiration date in the future.'); return;
+  }
+  const m = loadMarket();
+  m.quotes = m.quotes || {};
+  const prev = m.quotes[tk] || {};
+  const legs = manualLegs(price, exp, p5, p10);
+  m.quotes[tk] = {
+    ticker: tk, price,
+    prevClose: prev.prevClose ?? null,
+    // Re-derive the day's move from the price just typed rather than carrying
+    // over a percentage that belonged to a different price
+    changePct: prev.prevClose > 0 ? (price - prev.prevClose) / prev.prevClose * 100 : null,
+    source: 'entered by hand', asOf: new Date().toISOString(),
+    expiry: exp, dte: Math.max(1, daysBetween(todayStr(), exp)),
+    offTarget: Math.abs(daysBetween(todayStr(), exp) - TARGET_DTE) > DTE_WINDOW,
+    legs, error: null
+  };
+  saveMarket(m);
+  closeOverlay('m-wlmanual');
+  renderWatchlist();
+  renderActive();
+}
+
+/* ── Turning a candidate into a trade ── */
+function logWatchTrade(tk, pct) {
+  const q = marketQuotes()[tk];
+  const l = (q?.legs || []).find(x => x.pct === pct);
+  if (!l || l.missing) return;
+  openAddModal({
+    type: 'put', ticker: tk, strike: l.strike, premium: Math.round(l.premium * 100) / 100,
+    qty: 1, dte: l.dte || (q.expiry ? daysBetween(todayStr(), q.expiry) : TARGET_DTE)
+  });
+}
+
+/* ── The best thing on the list right now ──
+   Only quotes fresh enough to act on are allowed to drive a suggestion. */
+function quoteAgeDays(q) {
+  if (!q?.asOf) return Infinity;
+  return (Date.now() - new Date(q.asOf).getTime()) / 86400000;
+}
+
+function bestCandidate() {
+  const quotes = marketQuotes();
+  let best = null;
+  loadWatchlist().forEach(tk => {
+    const q = quotes[tk];
+    if (!q || !q.legs || quoteAgeDays(q) > STALE_DAYS) return;
+    q.legs.forEach(l => {
+      if (l.missing || !(l.roi > 0)) return;
+      if (!best || l.roi > best.roi) best = { ...l, ticker: tk, price: q.price, expiry: q.expiry || l.expiry };
+    });
+  });
+  return best;
+}
+
+/* ═══════════════════════════════════════
+   RENDER: WATCHLIST
+═══════════════════════════════════════ */
+function renderWatchlist() {
+  const el = document.getElementById('wl-list');
+  if (!el) return;
+  const list   = loadWatchlist();
+  const quotes = marketQuotes();
+  const store  = loadMarket();
+
+  const notes  = loadWatchNotes();
+  const target = watchTarget();
+  const sort   = watchSort();
+  const best   = bestCandidate();
+
+  document.getElementById('wl-offline-note')?.classList.toggle('show', navigator.onLine === false);
+
+  const btn = document.getElementById('wl-refresh-btn');
+  if (btn) {
+    btn.classList.toggle('spinning', _wlRunning);
+    btn.disabled = _wlRunning || !list.length;
+  }
+
+  document.getElementById('wl-stats').innerHTML =
+    `<span><b>${fmtInt(list.length)}</b> watching</span>`
+    + (best ? `<span>best <b class="amber">${fmtPct(best.roi)}</b> on ${esc(best.ticker)}</span>` : '')
+    + (store.lastRun ? `<span>updated ${esc(new Date(store.lastRun)
+        .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</span>` : '');
+
+  document.getElementById('wl-sched').innerHTML = scheduleText()
+    + `<br><button class="wl-x wl-ctl${sort === 'roi' ? ' on' : ''}" onclick="toggleWatchSort()"
+         >sort: ${sort === 'roi' ? 'yield' : 'added'}</button>`
+    + `<button class="wl-x wl-ctl${target != null ? ' on' : ''}" onclick="configureWatchTarget()"
+         >target: ${target == null ? 'off' : fmtPct(target)}</button>`
+    + `<button class="wl-x wl-ctl${quoteProxy() ? ' on' : ''}" onclick="configureQuoteProxy()"
+         title="Fallback route for quote requests">source</button>`;
+
+  if (!list.length) {
+    el.innerHTML = `<div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+      <div class="empty-txt">Nothing on the watchlist yet<br>Tap + to track a ticker's 45-day put premiums</div>
+    </div>`;
+    document.getElementById('wl-suggest').innerHTML = '';
+    return;
+  }
+
+  // Sorting by yield puts the best candidate on top; cards with no quote to
+  // rank sink to the bottom rather than jumping around as quotes arrive.
+  const ordered = sort === 'roi'
+    ? list.slice().sort((a, b) => {
+        const ra = bestLeg(quotes[a])?.roi ?? -1, rb = bestLeg(quotes[b])?.roi ?? -1;
+        return rb - ra || list.indexOf(a) - list.indexOf(b);
+      })
+    : list;
+
+  el.innerHTML = ordered.map(tk => watchCardHTML(tk, quotes[tk], notes[tk], target)).join('');
+  renderWatchSuggestion(best);
+}
+
+function watchCardHTML(tk, q, note, target) {
+  const pending = !!_wlPending[tk];
+  const chg     = q && q.changePct != null ? q.changePct : null;
+  const dir     = chg == null ? '' : chg > 0 ? ' up' : chg < 0 ? ' down' : '';
+  const cls     = (!q || (q.error && !q.legs)) ? ' err' : dir;
+  const age     = q ? quoteAgeDays(q) : Infinity;
+  const stale   = age > STALE_DAYS;
+  const top     = bestLeg(q);
+  const hit     = target != null && top && !stale && top.roi >= target;
+
+  const priceHTML = q?.price > 0 ? `
+    <div>
+      <div class="wl-px">${fmtMoney(q.price)}</div>
+      <div class="wl-chg ${chg == null ? '' : chg > 0 ? 'green' : chg < 0 ? 'red' : ''}">
+        ${chg == null ? '—' : (chg > 0 ? '+' : '') + fmtPct(chg)}
+      </div>
+    </div>` : `<div class="wl-chg" style="color:var(--text3)">${pending ? 'loading…' : 'no price'}</div>`;
+
+  let body = '';
+  if (q?.legs?.length) {
+    body = `<div class="wl-legs">
+      <div class="wl-leg head">
+        <div>OTM</div><div class="wl-leg-val">Strike</div>
+        <div class="wl-leg-val">Premium</div><div class="wl-leg-val">Ann. ROI</div>
+      </div>
+      ${q.legs.map(l => legRowHTML(tk, l)).join('')}
+    </div>`;
+  } else if (q?.price > 0) {
+    body = `<div class="wl-err">No option chain for this symbol${q.error ? ` — <b>${esc(q.error)}</b>` : ''}.
+      <button class="wl-x" onclick="openManualQuote('${esc(tk)}')">enter by hand</button></div>`;
+  } else if (q?.error) {
+    body = `<div class="wl-err"><b>Couldn't fetch a quote.</b> ${esc(q.error)}
+      <button class="wl-x" onclick="openManualQuote('${esc(tk)}')">enter by hand</button></div>`;
+  } else {
+    body = `<div class="wl-loading">${pending ? 'Fetching…' : 'No quote yet — tap Refresh.'}</div>`;
+  }
+
+  const asOf = q?.asOf ? new Date(q.asOf) : null;
+  const foot = [
+    q?.expiry ? `${esc(q.expiry)} · ${fmtInt(q.dte)}d${q.offTarget ? ' (no ~45d expiry listed)' : ''}` : null,
+    q?.source ? esc(q.source) : null,
+    asOf ? (stale ? `stale · ${asOf.toLocaleDateString()}` : asOf.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : null
+  ].filter(Boolean).join(' · ');
+
+  return `<div class="wl-card${cls}${hit ? ' hit' : ''}">
+    <div class="wl-top">
+      <div>
+        <div class="wl-tkr">${esc(tk)}${hit ? `<span class="wl-hit-badge">≥ ${fmtPct(target)}</span>` : ''}</div>
+        <div class="wl-sub">${q?.prevClose > 0 ? 'prev ' + fmtMoney(q.prevClose) : 'put candidate'}</div>
+      </div>
+      ${priceHTML}
+    </div>
+    ${body}
+    ${note ? `<div class="wl-note">${esc(note)}</div>` : ''}
+    <div class="wl-foot">
+      <div>${foot || '—'}</div>
+      <div class="wl-foot-acts">
+        <button class="wl-x" onclick="openManualQuote('${esc(tk)}')">edit</button>
+        <button class="wl-x danger" onclick="removeWatchItem('${esc(tk)}')">remove</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function legRowHTML(tk, l) {
+  if (l.missing) {
+    return `<div class="wl-leg">
+      <div class="wl-leg-tag">-${fmtInt(l.pct)}%</div>
+      <div class="wl-leg-val">${l.strike ? fmtMoney(l.strike) : '—'}</div>
+      <div class="wl-leg-val" style="color:var(--text3)">${esc(l.missing)}</div>
+      <div class="wl-leg-val">—</div>
+    </div>`;
+  }
+  return `<div class="wl-leg">
+    <div class="wl-leg-tag">-${fmtInt(l.pct)}%</div>
+    <div class="wl-leg-val">${fmtMoney(l.strike)}
+      <div class="wl-leg-sub">${fmtPct(l.otmPct)} otm</div></div>
+    <div class="wl-leg-val">${fmtMoney(l.premium)}
+      <div class="wl-leg-sub">${esc(l.basis)}${l.oi ? ' · oi ' + fmtInt(l.oi) : ''}</div></div>
+    <div class="wl-leg-val roi">${fmtPct(l.roi)}
+      <button class="wl-leg-btn" onclick="logWatchTrade('${esc(tk)}',${l.pct})">log</button></div>
+  </div>`;
+}
+
+/* ── Suggested trade / suggested close ──
+   The watchlist is only worth keeping if it changes a decision. It does that
+   in one place: capital already committed to a weak position could be earning
+   the candidate's rate instead. switchBreakeven() prices exactly that — the
+   most you can pay to buy back and still come out ahead. */
+function renderWatchSuggestion(best) {
+  const el = document.getElementById('wl-suggest');
+  if (!el) return;
+  if (!best) {
+    const anyQuote = Object.keys(marketQuotes()).length > 0;
+    el.innerHTML = anyQuote
+      ? `<div class="risk-note">No candidate to rank yet — the stored quotes are older than
+          ${fmtInt(STALE_DAYS)} days or carry no premiums. Refresh, or enter one by hand.</div>`
+      : '';
+    return;
+  }
+
+  let html = `<div class="bt-preview-hdr">Suggested Trade</div>
+    <div class="tc-hint good" style="margin:0 0 10px">
+      Best on the list: <b>${esc(best.ticker)}</b> ${fmtMoney(best.strike)} put,
+      ${fmtInt(best.dte)} days out at <b>${fmtMoney(best.premium)}</b> —
+      ${fmtPct(best.roi)} annualized on ${fmtMoney(best.strike * 100)} of capital
+      (${fmtPct(best.otmPct)} out of the money).
+    </div>`;
+
+  /* Which open positions are worth closing to fund it. Two positions are
+     deliberately never listed: one on the same ticker, because rotating a
+     name into itself is not a rotation and doubles the concentration; and
+     one the candidate barely beats, because crossing two spreads to chase a
+     point of annualized yield loses money in practice. */
+  const active = load().trades.filter(t =>
+    t.status === 'active' && tradeCapital(t) > 0 && t.ticker !== best.ticker);
+  const rows = active.map(t => ({ t, hold: positionRate(t), sw: switchBreakeven(t, best.roi) }))
+    .filter(r => r.sw.left > 0 && best.roi >= r.hold * MIN_SWITCH_EDGE)
+    .sort((a,b) => a.hold - b.hold);
+
+  if (rows.length) {
+    html += breakdownCardHTML('Close to fund it', 'max buy-back price to come out ahead',
+      rows.map(r => `<div class="brk-row" style="grid-template-columns:1.5fr 1fr 1fr">
+        <div class="brk-name">${esc(r.t.ticker)}
+          <div style="font-size:8px;color:var(--text3);font-weight:400">
+            ${esc(r.t.type.toUpperCase())} ${fmtMoney(currentStrike(r.t))} ·
+            ${fmtInt(r.sw.left)}d left · holding ${fmtPct(r.hold)}</div></div>
+        <div class="brk-val">${fmtMoney(r.sw.price)}
+          <div class="wl-leg-sub">vs expiry</div></div>
+        <div class="brk-val amber">${fmtMoney(r.sw.altPrice)}
+          <div class="wl-leg-sub">vs ${esc(best.ticker)}</div></div>
+      </div>`), ['Position', 'Break-even', 'With switch', '']);
+    html += `<div class="risk-note">Buying one of these back below the right-hand price and
+      writing the ${esc(best.ticker)} put instead earns more on the same capital over the same
+      days. The left-hand price is the plain hold-to-expiry break-even, with nowhere else
+      to put the money.</div>`;
+  } else if (active.length) {
+    html += `<div class="risk-note">Nothing is worth closing to fund it — every open position
+      is either on ${esc(best.ticker)} already or annualizing close enough to ${fmtPct(best.roi)}
+      that switching would not cover the spreads.</div>`;
+  }
   el.innerHTML = html;
 }
 
@@ -2262,9 +3129,11 @@ function renderOnlineState() {
   const offline = navigator.onLine === false;
   document.getElementById('offline-pill')?.classList.toggle('show', offline);
   document.getElementById('scan-offline-note')?.classList.toggle('show', offline);
+  document.getElementById('wl-offline-note')?.classList.toggle('show', offline);
 }
-window.addEventListener('online',  renderOnlineState);
 window.addEventListener('offline', renderOnlineState);
+// Coming back online is the moment to catch up anything the schedule missed
+window.addEventListener('online', () => { renderOnlineState(); checkMarketSchedule(); });
 
 /* ═══════════════════════════════════════
    EXPIRY REMINDERS
@@ -2341,7 +3210,9 @@ async function checkExpiryReminders(force) {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { renderOnlineState(); checkExpiryReminders(); }
+  if (document.visibilityState === 'visible') {
+    renderOnlineState(); checkExpiryReminders(); checkMarketSchedule();
+  }
 });
 
 /* ═══════════════════════════════════════
@@ -2389,7 +3260,9 @@ function exportData() {
     exported: new Date().toISOString(),
     exportedFrom: 'Options Tracker',
     trades: d.trades,
-    positions: loadPositions(d)
+    positions: loadPositions(d),
+    watchlist: loadWatchlist(d),
+    watchNotes: loadWatchNotes(d)
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url  = URL.createObjectURL(blob);
@@ -2529,8 +3402,17 @@ function previewImport(file) {
       });
       const positions = (Array.isArray(data.positions) ? data.positions : [])
         .map(normalizePosition).filter(Boolean);
+      const watchlist = Array.from(new Set((Array.isArray(data.watchlist) ? data.watchlist : [])
+        .map(v => String(v || '').toUpperCase().replace(/[^A-Z.]/g, '').slice(0, 6))
+        .filter(v => TICKER_RE.test(v)))).slice(0, MAX_WATCH);
+      const rawNotes = (data.watchNotes && typeof data.watchNotes === 'object') ? data.watchNotes : {};
+      const watchNotes = {};
+      watchlist.forEach(tk => {
+        const n = String(rawNotes[tk] || '').trim().slice(0, 80);
+        if (n) watchNotes[tk] = n;
+      });
       if (!trades.length) throw new Error('No valid trades in file');
-      _importPayload = { trades, positions };
+      _importPayload = { trades, positions, watchlist, watchNotes };
 
       const active  = trades.filter(t => t.status === 'active').length;
       const closed  = trades.filter(t => t.status !== 'active').length;
@@ -2545,6 +3427,7 @@ function previewImport(file) {
         <div class="import-preview-row"><span class="import-preview-lbl">Closed / Expired</span><span class="import-preview-val">${closed}</span></div>
         <div class="import-preview-row"><span class="import-preview-lbl">Rolled trades</span><span class="import-preview-val">${rolled}</span></div>
         ${positions.length ? `<div class="import-preview-row"><span class="import-preview-lbl">Share lots</span><span class="import-preview-val">${positions.length}</span></div>` : ''}
+        ${watchlist.length ? `<div class="import-preview-row"><span class="import-preview-lbl">Watchlist</span><span class="import-preview-val">${watchlist.length}</span></div>` : ''}
         ${skipped ? `<div class="import-preview-row"><span class="import-preview-lbl">Skipped (invalid)</span><span class="import-preview-val" style="color:var(--red)">${skipped}</span></div>` : ''}
       `;
       setImportMode('merge');
@@ -2568,8 +3451,11 @@ function confirmImport() {
   if (!_importPayload) return;
   const incoming = _importPayload.trades || [];
   const incomingPos = _importPayload.positions || [];
+  const incomingWatch = _importPayload.watchlist || [];
+  const incomingNotes = _importPayload.watchNotes || {};
   if (_importMode === 'replace') {
-    save({ trades: incoming, positions: incomingPos });
+    save({ trades: incoming, positions: incomingPos,
+           watchlist: incomingWatch, watchNotes: incomingNotes });
   } else {
     // Merge: skip any record whose id already exists
     const current = load();
@@ -2577,12 +3463,17 @@ function confirmImport() {
     current.trades = current.trades.concat(incoming.filter(t => !existingIds.has(t.id)));
     const existingPos = new Set(loadPositions(current).map(p => p.id));
     current.positions = loadPositions(current).concat(incomingPos.filter(p => !existingPos.has(p.id)));
+    const watch = loadWatchlist(current);
+    current.watchlist = watch.concat(incomingWatch.filter(tk => !watch.includes(tk))).slice(0, MAX_WATCH);
+    // A note already on this device wins; the backup only fills the gaps
+    current.watchNotes = { ...incomingNotes, ...loadWatchNotes(current) };
     save(current);
   }
   closeOverlay('m-import');
   _importPayload = null;
   renderActive();
   updateStats();
+  renderWatchlist();
   alert('Import complete. Your trades have been restored.');
 }
 
@@ -3148,7 +4039,7 @@ document.querySelectorAll('.overlay, .confirm-overlay').forEach(el => {
 });
 
 // Uppercase ticker inputs
-['a-ticker','c-ticker'].forEach(id => {
+['a-ticker','c-ticker','wl-ticker'].forEach(id => {
   document.getElementById(id).addEventListener('input', function(){ this.value = this.value.toUpperCase(); });
 });
 
@@ -3163,12 +4054,14 @@ updateLastExportLabel();
 renderOnlineState();
 renderNotifState();
 checkExpiryReminders();
+renderWatchlist();
+checkMarketSchedule();
 
 // Handle ?tab= from manifest shortcuts
 (function(){
   const params = new URLSearchParams(window.location.search);
   const tab = params.get('tab');
-  if (tab && ['history','roi','analysis','scan'].includes(tab)) switchTab(tab);
+  if (tab && ['watch','roi','analysis','scan'].includes(tab)) switchTab(tab);
 })();
 
 // ── Generate & inject PWA home screen icon ──

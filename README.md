@@ -17,20 +17,25 @@ in your browser's localStorage; nothing is sent to a server.
 - **Roll tracking** — roll a position to a new strike/expiration; premiums accumulate,
   the full roll history stays on the card, and the roll sheet says whether the new leg
   alone beats your realized average.
-- **History & Analysis** — realized P&L, capital-weighted annualized ROI, win rate,
-  average holding period, month-by-month performance, and breakdowns by term
-  written, ticker and type.
+- **Watchlist** — tickers and ETFs you are thinking about, each showing price, the
+  day's move, and what a put is paying 5% and 10% out of the money at ~45 days,
+  with the annualized ROI. Refreshed at 9:31 am and noon ET. See below.
+- **Analysis** — realized P&L, capital-weighted annualized ROI, win rate, average
+  holding period, month-by-month performance with every closed position and what
+  it earned, and breakdowns by term written, ticker and type.
 - **ROI Calculator** — single-leg calculator plus a VS mode to compare two candidate
   trades side by side.
 - **Scan** — OCR brokerage screenshots (Tesseract.js, in-browser) into pre-filled
   trade cards for review before saving.
 - **Batch entry** — bulk-enter historic trades that were never logged, either as
   quick rows or pasted straight from a spreadsheet. See below.
-- **Backup** — export/import JSON backups (validated on import), Excel export
-  (SheetJS), and a reminder banner when your last backup is over 30 days old.
+- **Backup** — export/import JSON backups (validated on import; watchlist and its notes
+  included), Excel export (SheetJS), and a reminder banner when your last backup is over
+  30 days old.
 - **Offline** — installable and fully usable with no connection. See below.
 - **Expiry reminders** — an opt-in notification when something is within 5 days of
-  expiring, raised when you open or return to the app.
+  expiring, raised when you open or return to the app. The same permission carries the
+  watchlist's target-yield alert.
 
 ## The wheel
 
@@ -90,11 +95,102 @@ Below that price, closing now annualizes better than holding — the general for
 the "take profit at 50%" rule, computed from your actual dates. Every open position
 shows its own threshold.
 
+That version assumes the freed capital does nothing. When the watchlist holds a
+candidate paying more than a position is making, the price worth paying to get out
+rises by whatever the capital would earn there instead:
+
+```
+buy-back price = premium × (remaining / span)  +  strike × altROI × (remaining / 365)
+```
+
+Capital per share is the strike, so both terms are per share and directly comparable
+to a quoted option price. With `altROI = 0` it collapses back to the line above. Open
+position cards show the second figure whenever there is a better candidate on the
+watchlist, and the Watchlist tab ranks which positions are worth closing to fund it.
+
+## Watchlist
+
+Tickers you are considering, not ones you hold. **+** adds one. Each card carries the
+current price, the day's percentage move, and two put candidates — the strikes nearest
+5% and 10% below spot at the listed expiration closest to 45 days out — with premium
+and annualized ROI. **Log** turns either one into a pre-filled new trade, and **remove**
+offers an undo, since it sits under the floating add button.
+
+Three controls sit under the schedule line:
+
+- **sort** — the order you added them in, or best annualized yield first. Cards with no
+  quote to rank sink to the bottom rather than shuffling as quotes arrive.
+- **target** — an annualized yield worth being told about. Cards at or above it are
+  marked, and if expiry reminders are switched on, a scheduled update notifies you when
+  something crosses it: once a day, and only for tickers that were not already above
+  the line at the previous run. A stale quote never counts as clearing it.
+- **source** — the optional CORS proxy described below.
+
+**edit** on a card opens a per-ticker sheet holding a free-text **note** ("earnings
+8/12", "wait for $210") shown on the card, and the manual quote fields. The note saves
+on its own; the quote is only written when a price is actually typed, so editing a note
+never overwrites a good fetched quote with a hand one. Notes travel in a JSON backup
+alongside the watchlist itself; on a merge import, a note already on the device wins.
+
+- **Expiration** — the listed expiry closest to 45 days, preferring one inside ±7
+  days. When the chain has nothing in that window the closest available is used and
+  the card says so. On an exact tie the shorter term wins.
+- **Strike** — the nearest strike *at or below* the target, so a leg is never less
+  out of the money than asked for. The actual distance is printed under the strike.
+- **Premium** — the mid of bid/ask when both sides are quoted, otherwise the bid,
+  otherwise the last trade. The card always says which, because a last trade on an
+  illiquid strike can be days old.
+- **ROI** — `(365 / DTE) × (premium / strike)`, the same formula used everywhere else
+  in the app, so a candidate and a position you hold are directly comparable.
+
+### Where the quotes come from
+
+Delayed public feeds, tried in order until one answers: Cboe's delayed-quote CDN
+(underlying and full chain in one request), then Yahoo Finance, then Yahoo's chart
+endpoint for a price alone. The last good answer for each ticker is kept in
+`localStorage`, so the tab is never blank, works offline, and shows the time each
+quote was taken. A failed refresh keeps the previous quote and records why it failed
+rather than blanking the card.
+
+There is no server and no API key. If a network blocks these feeds, two fallbacks
+exist: **source** (next to the schedule line) sets an optional CORS proxy, used only
+after a direct request has already failed; and **edit** on any card takes the price,
+expiration and two premiums typed straight off your broker, deriving the strikes and
+the ROI from them.
+
+Nothing here is a fill. Delayed mid prices are a starting point for deciding what to
+look at, not what you will get.
+
+### Refresh schedule
+
+Twice a day, on New York time: **9:31 am** — a minute after the open, so the first
+prints have happened — and **12:00 pm**. Weekends are skipped; market holidays are
+not modelled, so a holiday simply carries the previous close forward.
+
+A page with no server can only act while it is open, so rather than relying on a
+timer alone, every entry point — launch, returning to the app, coming back online,
+and a one-minute tick while open — asks the same question: has a slot for today gone
+by without a run? Opening the app in the afternoon catches up the most recent slot
+rather than replaying both.
+
+Requests are deliberately spread out. Each run starts a stable random 0–4 minutes
+after its slot time, so two devices running this do not hit the same feed on the same
+second, and symbols are fetched one at a time with a 9–12 second gap between them.
+A manual **Refresh** uses a short gap instead, and a feed answering 429 backs the
+whole ticker off once before the remaining providers are tried.
+
 ## Analysis
 
-Beyond month-by-month totals, the Analysis tab answers what actually works and what
-is actually at risk:
+Everything about closed trades lives here — there is no separate History tab. Beyond
+month-by-month totals, the Analysis tab answers what actually works and what is
+actually at risk:
 
+- **Realized P&L** with the year-to-date figure alongside it, and **monthly ROI**
+  with the annualized rate beneath it.
+- **Every closed position**, under the month it closed in, carrying what it was
+  written for, total premiums (and any buy-back), days the capital was tied up,
+  rolls, and what that annualized to — for a share lot, the stock move, the premiums
+  that lowered its basis, and the cycle ROI.
 - **Win rate and average holding period** alongside realized P&L and monthly ROI.
 - **Breakdowns** by term written (0–7d / 8–21d / 22–45d / 46d+), by ticker, and by
   type — each with win rate, P&L and capital-weighted annualized ROI, so patterns
@@ -103,7 +199,8 @@ is actually at risk:
   40% or more of the book.
 - **Assignment obligation** — the cash needed if every open put is assigned.
 - **Capital efficiency** — open positions ranked by annualized return, weakest
-  flagged, which is the one to close or roll first.
+  flagged, which is the one to close or roll first. The Watchlist tab takes this one
+  step further and prices the switch against a live candidate.
 
 ## Number formatting
 
@@ -129,7 +226,8 @@ the same way as the app.
 Trades live in `localStorage` and the service worker keeps a copy of the app itself,
 so once the page has been opened online a single time everything core keeps working
 with no connection — viewing and adding trades, rolling, closing, batch entry, the
-ROI calculator, analysis, and JSON export/import.
+ROI calculator, analysis, and JSON export/import. The watchlist keeps showing the
+last quotes it fetched, stamped with when they were taken.
 
 Two caches back this:
 
