@@ -29,11 +29,13 @@ in your browser's localStorage; nothing is sent to a server.
   trade cards for review before saving.
 - **Batch entry** — bulk-enter historic trades that were never logged, either as
   quick rows or pasted straight from a spreadsheet. See below.
-- **Backup** — export/import JSON backups (validated on import, watchlist included),
-  Excel export (SheetJS), and a reminder banner when your last backup is over 30 days old.
+- **Backup** — export/import JSON backups (validated on import; watchlist and its notes
+  included), Excel export (SheetJS), and a reminder banner when your last backup is over
+  30 days old.
 - **Offline** — installable and fully usable with no connection. See below.
 - **Expiry reminders** — an opt-in notification when something is within 5 days of
-  expiring, raised when you open or return to the app.
+  expiring, raised when you open or return to the app. The same permission carries the
+  watchlist's target-yield alert.
 
 ## The wheel
 
@@ -108,10 +110,27 @@ watchlist, and the Watchlist tab ranks which positions are worth closing to fund
 
 ## Watchlist
 
-Tickers you are considering, not ones you hold. Each card carries the current price,
-the day's percentage move, and two put candidates — the strikes nearest 5% and 10%
-below spot at the listed expiration closest to 45 days out — with premium and
-annualized ROI. **Log** turns either one into a pre-filled new trade.
+Tickers you are considering, not ones you hold. **+** adds one. Each card carries the
+current price, the day's percentage move, and two put candidates — the strikes nearest
+5% and 10% below spot at the listed expiration closest to 45 days out — with premium
+and annualized ROI. **Log** turns either one into a pre-filled new trade, and **remove**
+offers an undo, since it sits under the floating add button.
+
+Three controls sit under the schedule line:
+
+- **sort** — the order you added them in, or best annualized yield first. Cards with no
+  quote to rank sink to the bottom rather than shuffling as quotes arrive.
+- **target** — an annualized yield worth being told about. Cards at or above it are
+  marked, and if expiry reminders are switched on, a scheduled update notifies you when
+  something crosses it: once a day, and only for tickers that were not already above
+  the line at the previous run. A stale quote never counts as clearing it.
+- **source** — the optional CORS proxy described below.
+
+**edit** on a card opens a per-ticker sheet holding a free-text **note** ("earnings
+8/12", "wait for $210") shown on the card, and the manual quote fields. The note saves
+on its own; the quote is only written when a price is actually typed, so editing a note
+never overwrites a good fetched quote with a hand one. Notes travel in a JSON backup
+alongside the watchlist itself; on a merge import, a note already on the device wins.
 
 - **Expiration** — the listed expiry closest to 45 days, preferring one inside ±7
   days. When the chain has nothing in that window the closest available is used and

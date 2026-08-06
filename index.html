@@ -304,18 +304,19 @@
     .sum-val{font-size:14px;font-weight:600}
 
     /* ── WATCHLIST TAB ── */
-    .wl-addbar{display:flex;gap:8px;margin-bottom:14px}
-    .wl-addbar .fi{flex:1;text-transform:uppercase;letter-spacing:.08em}
-    .wl-add-btn{
-      padding:0 18px;border:none;border-radius:10px;background:var(--blue);
-      color:#fff;font-family:inherit;font-size:11px;font-weight:700;
-      letter-spacing:.1em;text-transform:uppercase;cursor:pointer;
+    #m-wladd .fi{text-transform:uppercase;letter-spacing:.08em}
+    .wl-page-hdr{
+      display:flex;justify-content:space-between;align-items:flex-start;
+      gap:10px;margin-bottom:10px;
     }
-    .wl-add-btn:active{opacity:.8}
-    .wl-add-btn:disabled{opacity:.45;cursor:default}
-
-    .wl-refresh-row{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-    .wl-sched{flex:1;font-size:9px;color:var(--text3);line-height:1.6}
+    .wl-stats{
+      display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline;
+      font-size:11px;color:var(--text2);margin-bottom:5px;
+    }
+    .wl-stats>span:not(:first-child)::before{content:'· ';color:var(--text3)}
+    .wl-stats b{font-size:13px;font-weight:600;color:var(--text)}
+    .wl-stats .amber{color:var(--amber)}
+    .wl-sched{font-size:9px;color:var(--text3);line-height:1.7;margin-bottom:12px}
     .wl-sched b{color:var(--text2);font-weight:500}
 
     .wl-card{
@@ -327,6 +328,18 @@
     .wl-card.up{border-left-color:var(--green)}
     .wl-card.down{border-left-color:var(--red)}
     .wl-card.err{border-left-color:var(--amber)}
+    /* clears the yield you asked to be told about */
+    .wl-card.hit{border-color:rgba(26,127,75,.4);box-shadow:0 1px 6px rgba(26,127,75,.14)}
+    .wl-hit-badge{
+      font-size:7px;font-weight:600;padding:2px 6px;border-radius:20px;
+      letter-spacing:.08em;text-transform:uppercase;margin-left:6px;
+      background:var(--green-dim);color:var(--green);border:1px solid rgba(26,127,75,.25);
+      vertical-align:2px;
+    }
+    .wl-note{
+      padding:7px 12px;font-size:9px;color:var(--text2);line-height:1.6;
+      border-top:1px solid var(--border);background:rgba(26,95,175,.035);
+    }
     .wl-top{display:flex;justify-content:space-between;align-items:flex-start;padding:11px 12px 9px}
     .wl-tkr{font-size:18px;font-weight:700;letter-spacing:-.02em}
     .wl-sub{font-size:8px;color:var(--text3);margin-top:2px;letter-spacing:.05em}
@@ -366,6 +379,14 @@
       font-size:8px;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;padding:2px 4px;
     }
     .wl-x.danger:active{color:var(--red)}
+    /* the header controls carry a chip, since "target" is a setting rather
+       than an action and has nothing else to announce it */
+    .wl-ctl{
+      border:1px solid var(--border2);border-radius:20px;
+      padding:3px 9px;margin:5px 5px 0 0;color:var(--text2);
+    }
+    .wl-ctl:active{background:var(--blue-dim);border-color:rgba(26,95,175,.35);color:var(--blue)}
+    .wl-ctl.on{background:var(--green-dim);border-color:rgba(26,127,75,.3);color:var(--green)}
     .wl-err{padding:9px 12px;font-size:9px;color:var(--amber);line-height:1.6;border-top:1px solid var(--border)}
     .wl-err b{color:var(--text2)}
     .wl-loading{padding:9px 12px;font-size:9px;color:var(--text3);border-top:1px solid var(--border)}
@@ -978,52 +999,28 @@
         </div>
         <div id="pos-list"></div>
       </div>
-      <button class="fab" id="fab" onclick="openAddModal()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-      </button>
     </div>
 
     <!-- ══ TAB: WATCHLIST ══ -->
     <div class="tab-pane" id="tab-watch">
       <div class="tab-wrap">
-        <div class="page-hdr">
-          <div class="page-title">Watchlist</div>
-          <div class="page-sub">put candidates · 5% &amp; 10% OTM at ~45 days</div>
-        </div>
-
-        <div class="wl-addbar">
-          <input class="fi" id="wl-ticker" placeholder="Add ticker or ETF" maxlength="6"
-                 autocapitalize="characters" autocorrect="off" spellcheck="false"
-                 onkeydown="if(event.key==='Enter')addWatchItem()">
-          <button class="wl-add-btn" onclick="addWatchItem()">Add</button>
-        </div>
-
-        <div class="summary-grid">
-          <div class="sum-card">
-            <div class="sum-lbl">Watching</div>
-            <div class="sum-val neu" id="w-count">0</div>
+        <div class="page-hdr wl-page-hdr">
+          <div>
+            <div class="page-title">Watchlist</div>
+            <div class="page-sub">put candidates · 5% &amp; 10% OTM at ~45 days</div>
           </div>
-          <div class="sum-card">
-            <div class="sum-lbl">Best Ann. ROI</div>
-            <div class="sum-val neu" id="w-best">—</div>
-          </div>
-          <div class="sum-card">
-            <div class="sum-lbl">Updated</div>
-            <div class="sum-val neu" id="w-updated" style="font-size:11px">—</div>
-          </div>
-        </div>
-
-        <div class="offline-note" id="wl-offline-note">
-          <b>You're offline.</b> The last prices fetched are shown below with the time
-          they were taken. They will refresh on the next scheduled run once you reconnect.
-        </div>
-
-        <div class="wl-refresh-row">
-          <div class="wl-sched" id="wl-sched">—</div>
           <button class="refresh-btn" id="wl-refresh-btn" onclick="refreshWatchlist(true)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             Refresh
           </button>
+        </div>
+
+        <div class="wl-stats" id="wl-stats"></div>
+        <div class="wl-sched" id="wl-sched"></div>
+
+        <div class="offline-note" id="wl-offline-note">
+          <b>You're offline.</b> The last prices fetched are shown below with the time
+          they were taken. They will refresh on the next scheduled run once you reconnect.
         </div>
 
         <div id="wl-list"></div>
@@ -1342,6 +1339,12 @@
     </div>
 
   </div><!-- /content -->
+
+  <!-- Add button — the primary action of whichever tab is showing one.
+       Lives outside the panes so it survives a tab switch. -->
+  <button class="fab" id="fab" onclick="fabAction()" aria-label="Add">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+  </button>
 
   <!-- ── BOTTOM NAV ── -->
   <nav id="bottom-nav" aria-label="Main navigation">
@@ -1694,22 +1697,53 @@
   </div>
 </div>
 
-<!-- ═══ MODAL: WATCHLIST MANUAL QUOTE ═══ -->
+<!-- ═══ MODAL: ADD TO WATCHLIST ═══ -->
+<div class="overlay" id="m-wladd">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-hdr">
+      <div class="sheet-title">Add to Watchlist</div>
+      <button class="sheet-close" onclick="closeOverlay('m-wladd')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="sheet-body">
+      <div class="fg">
+        <label class="fl">Ticker or ETF</label>
+        <input class="fi" id="wl-ticker" placeholder="AAPL" maxlength="6"
+               autocapitalize="characters" autocorrect="off" spellcheck="false"
+               onkeydown="if(event.key==='Enter')addWatchItem()">
+      </div>
+      <div class="info-box">
+        Anything with listed options. The quote is fetched straight away, then again at
+        9:31 am and noon each weekday.
+      </div>
+      <button class="sub-btn" onclick="addWatchItem()">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL: WATCHLIST CARD (note + manual quote) ═══ -->
 <div class="overlay" id="m-wlmanual">
   <div class="sheet">
     <div class="sheet-handle"></div>
     <div class="sheet-hdr">
-      <div class="sheet-title" id="wm-title">Enter Quote</div>
+      <div class="sheet-title" id="wm-title">Card</div>
       <button class="sheet-close" onclick="closeOverlay('m-wlmanual')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>
     <div class="sheet-body">
       <input type="hidden" id="wm-ticker">
+      <div class="fg">
+        <label class="fl">Note</label>
+        <input class="fi" id="wm-note" maxlength="80" placeholder="earnings 8/12 · wait for $210">
+      </div>
       <div class="info-box">
-        For when the quote feed can't be reached — from your broker, type the underlying
-        price and the two put premiums. Strikes are taken 5% and 10% below the price you
-        enter, rounded to the nearest dollar, and the ROI is computed from the expiration date.
+        Leave the price blank to keep the fetched quote and just save the note. Fill it in
+        when the feed can't be reached — from your broker, the underlying price and the two
+        put premiums. Strikes are taken 5% and 10% below the price you enter, rounded to the
+        nearest dollar, and the ROI is computed from the expiration date.
       </div>
       <div class="fr">
         <div class="fg">
@@ -1738,7 +1772,7 @@
         </div>
         <div class="rp-val" id="wm-roi">—</div>
       </div>
-      <button class="sub-btn" onclick="saveManualQuote()">Save Quote</button>
+      <button class="sub-btn" onclick="saveManualQuote()">Save Card</button>
     </div>
   </div>
 </div>

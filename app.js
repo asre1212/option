@@ -262,12 +262,20 @@ let calcTypeVal = 'put';
 /* ═══════════════════════════════════════
    TAB SWITCHING
 ═══════════════════════════════════════ */
+let currentTab = 'portfolio';
+
+// Tabs with an add button of their own, and what it opens
+const FAB_TABS = { portfolio: openAddModal, watch: openWatchAdd };
+
+function fabAction() { (FAB_TABS[currentTab] || openAddModal)(); }
+
 function switchTab(tab) {
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('tab-' + tab).classList.add('active');
   document.getElementById('n-' + tab).classList.add('active');
-  document.getElementById('fab').style.display = tab === 'portfolio' ? 'flex' : 'none';
+  currentTab = tab;
+  document.getElementById('fab').style.display = FAB_TABS[tab] ? 'flex' : 'none';
   if (tab === 'portfolio') { renderActive(); updateStats(); }
   if (tab === 'watch')     { renderWatchlist(); checkMarketSchedule(); }
   if (tab === 'roi')       { renderCalcAverages(); }
@@ -2000,12 +2008,58 @@ const saveMarket = m => {
 };
 const marketQuotes = () => loadMarket().quotes || {};
 
-// The watchlist itself lives with the trades, so it travels in a backup
-const loadWatchlist = d => ((d || load()).watchlist || []).slice();
+// The watchlist itself lives with the trades, so it travels in a backup —
+// as does the note against each ticker. Quotes deliberately do not: they are
+// derived, they go stale, and a backup should not carry yesterday's prices.
+const loadWatchlist  = d => ((d || load()).watchlist || []).slice();
+const loadWatchNotes = d => ((d || load()).watchNotes) || {};
+
 function saveWatchlist(list) {
   const d = load();
   d.watchlist = list;
   save(d);
+}
+function saveWatchNote(tk, note) {
+  const d = load();
+  d.watchNotes = d.watchNotes || {};
+  const txt = String(note || '').trim().slice(0, 80);
+  if (txt) d.watchNotes[tk] = txt; else delete d.watchNotes[tk];
+  save(d);
+}
+
+/* ── Preferences ──
+   How the list is ordered, and the annualized yield worth being told about. */
+const SORT_KEY   = 'opts_wl_sort';
+const TARGET_KEY = 'opts_wl_target';
+
+const watchSort   = () => (localStorage.getItem(SORT_KEY) === 'roi' ? 'roi' : 'added');
+const watchTarget = () => { const n = parseFloat(localStorage.getItem(TARGET_KEY)); return n > 0 ? n : null; };
+
+function toggleWatchSort() {
+  localStorage.setItem(SORT_KEY, watchSort() === 'roi' ? 'added' : 'roi');
+  renderWatchlist();
+}
+
+function configureWatchTarget() {
+  const cur = watchTarget();
+  const val = prompt(
+    'Annualized ROI worth being told about, as a percentage.\n\n'
+    + 'Cards at or above it are marked, and — with expiry reminders switched on — a\n'
+    + 'scheduled update will notify you when one crosses it.\n\n'
+    + 'Leave blank to switch it off.', cur == null ? '' : String(cur));
+  if (val === null) return;
+  const v = val.trim();
+  if (!v) { localStorage.removeItem(TARGET_KEY); renderWatchlist(); return; }
+  const n = parseFloat(v);
+  if (!(n > 0) || n > 1000) { alert('Enter a percentage between 0 and 1000, e.g. 20'); return; }
+  localStorage.setItem(TARGET_KEY, String(n));
+  renderWatchlist();
+}
+
+// The best leg on a card, which is what the target is measured against
+function bestLeg(q) {
+  if (!q || !q.legs) return null;
+  return q.legs.reduce((b, l) => (!l.missing && l.roi > 0 && (!b || l.roi > b.roi)) ? l : b, null);
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -2368,6 +2422,44 @@ function markSlotsRun(keys) {
   saveMarket(store);
 }
 
+/* ── Telling you when something crosses the target ──
+   A scheduled update happens whether or not you are looking at the tab, so
+   the one that matters is worth surfacing. Reuses the notification the
+   expiry reminder already asked permission for; at most one a day, and only
+   for tickers that were not already above the line at the last run. */
+const WL_NOTICE_KEY = 'opts_wl_last_notice';
+
+async function notifyTargetHits() {
+  const target = watchTarget();
+  if (target == null || !notificationsSupported() || Notification.permission !== 'granted') return;
+
+  let seen = {};
+  try { seen = JSON.parse(localStorage.getItem(WL_NOTICE_KEY)) || {} } catch (e) {}
+  const quotes = marketQuotes();
+  const above  = [];
+  loadWatchlist().forEach(tk => {
+    const l = bestLeg(quotes[tk]);
+    if (l && l.roi >= target) above.push({ tk, roi: l.roi, strike: l.strike });
+  });
+
+  const day    = todayStr();
+  const told   = seen.date === day ? (seen.tickers || []) : [];
+  const fresh  = above.filter(a => !told.includes(a.tk)).sort((a,b) => b.roi - a.roi);
+  localStorage.setItem(WL_NOTICE_KEY, JSON.stringify({ date: day, tickers: above.map(a => a.tk) }));
+  if (!fresh.length) return;
+
+  const lead = fresh[0];
+  const body = fresh.length === 1
+    ? `${lead.tk} ${fmtMoney(lead.strike)} put — ${fmtPct(lead.roi)} annualized`
+    : `${fmtInt(fresh.length)} candidates above ${fmtPct(target)} — ${lead.tk} best at ${fmtPct(lead.roi)}`;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    await reg.showNotification('Options Tracker', {
+      body, tag: 'watchlist', icon: './icon.svg', badge: './icon.svg'
+    });
+  } catch (e) { /* a missed notification is not worth breaking the run over */ }
+}
+
 async function checkMarketSchedule() {
   if (_wlRunning || !loadWatchlist().length) return;
   const due = dueSlots();
@@ -2378,7 +2470,7 @@ async function checkMarketSchedule() {
   const fresh = await refreshWatchlist(false, run.label);
   // A run that reached nothing at all — no connection, feeds down — leaves
   // the slot due so the next tick tries again rather than writing the day off.
-  if (fresh) markSlotsRun(due.map(s => s.key));
+  if (fresh) { markSlotsRun(due.map(s => s.key)); notifyTargetHits(); }
 }
 
 // Poll while the app is open; also checked on load and on returning to it
@@ -2398,6 +2490,13 @@ function scheduleText() {
 }
 
 /* ── Watchlist edits ── */
+function openWatchAdd() {
+  const el = document.getElementById('wl-ticker');
+  if (el) el.value = '';
+  openOverlay('m-wladd');
+  setTimeout(() => { try { el && el.focus() } catch (e) {} }, 120);
+}
+
 function addWatchItem() {
   const el = document.getElementById('wl-ticker');
   const tk = (el.value || '').trim().toUpperCase();
@@ -2409,16 +2508,34 @@ function addWatchItem() {
   list.push(tk);
   saveWatchlist(list);
   el.value = '';
+  closeOverlay('m-wladd');
   renderWatchlist();
   if (navigator.onLine !== false) refreshOne(tk).then(renderWatchlist);
 }
 
+/* Remove is a one-tap action sitting under a floating add button, so it
+   always offers a way back — the same rule the trade list follows. */
 function removeWatchItem(tk) {
-  const list = loadWatchlist().filter(x => x !== tk);
-  saveWatchlist(list);
+  const before = loadWatchlist();
+  const idx    = before.indexOf(tk);
+  if (idx < 0) return;
+  const note   = loadWatchNotes()[tk] || '';
+  const quote  = marketQuotes()[tk];
+
+  saveWatchlist(before.filter(x => x !== tk));
+  saveWatchNote(tk, '');
   const m = loadMarket();
   if (m.quotes) { delete m.quotes[tk]; saveMarket(m); }
   renderWatchlist();
+
+  showToast(`${tk} removed from the watchlist`, 'Undo', () => {
+    const list = loadWatchlist();
+    if (!list.includes(tk)) list.splice(Math.min(idx, list.length), 0, tk);
+    saveWatchlist(list);
+    if (note) saveWatchNote(tk, note);
+    if (quote) { const mm = loadMarket(); mm.quotes = mm.quotes || {}; mm.quotes[tk] = quote; saveMarket(mm); }
+    renderWatchlist();
+  });
 }
 
 /* Some networks block these feeds outright. Rather than pretend, let the
@@ -2443,7 +2560,8 @@ function configureQuoteProxy() {
 function openManualQuote(tk) {
   const q = marketQuotes()[tk] || {};
   document.getElementById('wm-ticker').value = tk;
-  document.getElementById('wm-title').textContent = `${tk} — Enter Quote`;
+  document.getElementById('wm-title').textContent = tk;
+  document.getElementById('wm-note').value  = loadWatchNotes()[tk] || '';
   document.getElementById('wm-price').value = q.price || '';
   document.getElementById('wm-exp').value   = q.expiry || dateOffset(TARGET_DTE);
   const l5  = (q.legs || []).find(l => l.pct === 5);
@@ -2492,7 +2610,15 @@ function saveManualQuote() {
   const exp   = document.getElementById('wm-exp').value;
   const p5    = parseFloat(document.getElementById('wm-p5').value);
   const p10   = parseFloat(document.getElementById('wm-p10').value);
-  if (!(price > 0)) { alert('Enter the underlying price.'); return; }
+
+  // The note always saves; the quote only when a price was actually typed, so
+  // editing a note never overwrites a good fetched quote with a hand one.
+  saveWatchNote(tk, document.getElementById('wm-note').value);
+  if (!(price > 0)) {
+    closeOverlay('m-wlmanual');
+    renderWatchlist();
+    return;
+  }
   if (!DATE_RE.test(exp || '') || daysBetween(todayStr(), exp) <= 0) {
     alert('Enter an expiration date in the future.'); return;
   }
@@ -2559,9 +2685,12 @@ function renderWatchlist() {
   const quotes = marketQuotes();
   const store  = loadMarket();
 
+  const notes  = loadWatchNotes();
+  const target = watchTarget();
+  const sort   = watchSort();
+  const best   = bestCandidate();
+
   document.getElementById('wl-offline-note')?.classList.toggle('show', navigator.onLine === false);
-  document.getElementById('wl-sched').innerHTML = scheduleText()
-    + ` <button class="wl-x" onclick="configureQuoteProxy()" title="Fallback route for quote requests">source</button>`;
 
   const btn = document.getElementById('wl-refresh-btn');
   if (btn) {
@@ -2569,36 +2698,51 @@ function renderWatchlist() {
     btn.disabled = _wlRunning || !list.length;
   }
 
-  document.getElementById('w-count').textContent = fmtInt(list.length);
-  const best = bestCandidate();
-  const bestEl = document.getElementById('w-best');
-  bestEl.textContent = best ? fmtPct(best.roi) : '—';
-  bestEl.className   = 'sum-val ' + (best ? 'amber' : 'neu');
-  const upd = document.getElementById('w-updated');
-  upd.textContent = store.lastRun
-    ? new Date(store.lastRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : '—';
+  document.getElementById('wl-stats').innerHTML =
+    `<span><b>${fmtInt(list.length)}</b> watching</span>`
+    + (best ? `<span>best <b class="amber">${fmtPct(best.roi)}</b> on ${esc(best.ticker)}</span>` : '')
+    + (store.lastRun ? `<span>updated ${esc(new Date(store.lastRun)
+        .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</span>` : '');
+
+  document.getElementById('wl-sched').innerHTML = scheduleText()
+    + `<br><button class="wl-x wl-ctl${sort === 'roi' ? ' on' : ''}" onclick="toggleWatchSort()"
+         >sort: ${sort === 'roi' ? 'yield' : 'added'}</button>`
+    + `<button class="wl-x wl-ctl${target != null ? ' on' : ''}" onclick="configureWatchTarget()"
+         >target: ${target == null ? 'off' : fmtPct(target)}</button>`
+    + `<button class="wl-x wl-ctl${quoteProxy() ? ' on' : ''}" onclick="configureQuoteProxy()"
+         title="Fallback route for quote requests">source</button>`;
 
   if (!list.length) {
     el.innerHTML = `<div class="empty">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
-      <div class="empty-txt">Nothing on the watchlist yet<br>Add a ticker above to track its 45-day put premiums</div>
+      <div class="empty-txt">Nothing on the watchlist yet<br>Tap + to track a ticker's 45-day put premiums</div>
     </div>`;
     document.getElementById('wl-suggest').innerHTML = '';
     return;
   }
 
-  el.innerHTML = list.map(tk => watchCardHTML(tk, quotes[tk])).join('');
+  // Sorting by yield puts the best candidate on top; cards with no quote to
+  // rank sink to the bottom rather than jumping around as quotes arrive.
+  const ordered = sort === 'roi'
+    ? list.slice().sort((a, b) => {
+        const ra = bestLeg(quotes[a])?.roi ?? -1, rb = bestLeg(quotes[b])?.roi ?? -1;
+        return rb - ra || list.indexOf(a) - list.indexOf(b);
+      })
+    : list;
+
+  el.innerHTML = ordered.map(tk => watchCardHTML(tk, quotes[tk], notes[tk], target)).join('');
   renderWatchSuggestion(best);
 }
 
-function watchCardHTML(tk, q) {
+function watchCardHTML(tk, q, note, target) {
   const pending = !!_wlPending[tk];
   const chg     = q && q.changePct != null ? q.changePct : null;
   const dir     = chg == null ? '' : chg > 0 ? ' up' : chg < 0 ? ' down' : '';
   const cls     = (!q || (q.error && !q.legs)) ? ' err' : dir;
   const age     = q ? quoteAgeDays(q) : Infinity;
   const stale   = age > STALE_DAYS;
+  const top     = bestLeg(q);
+  const hit     = target != null && top && !stale && top.roi >= target;
 
   const priceHTML = q?.price > 0 ? `
     <div>
@@ -2634,15 +2778,16 @@ function watchCardHTML(tk, q) {
     asOf ? (stale ? `stale · ${asOf.toLocaleDateString()}` : asOf.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : null
   ].filter(Boolean).join(' · ');
 
-  return `<div class="wl-card${cls}">
+  return `<div class="wl-card${cls}${hit ? ' hit' : ''}">
     <div class="wl-top">
       <div>
-        <div class="wl-tkr">${esc(tk)}</div>
+        <div class="wl-tkr">${esc(tk)}${hit ? `<span class="wl-hit-badge">≥ ${fmtPct(target)}</span>` : ''}</div>
         <div class="wl-sub">${q?.prevClose > 0 ? 'prev ' + fmtMoney(q.prevClose) : 'put candidate'}</div>
       </div>
       ${priceHTML}
     </div>
     ${body}
+    ${note ? `<div class="wl-note">${esc(note)}</div>` : ''}
     <div class="wl-foot">
       <div>${foot || '—'}</div>
       <div class="wl-foot-acts">
@@ -3116,7 +3261,8 @@ function exportData() {
     exportedFrom: 'Options Tracker',
     trades: d.trades,
     positions: loadPositions(d),
-    watchlist: loadWatchlist(d)
+    watchlist: loadWatchlist(d),
+    watchNotes: loadWatchNotes(d)
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url  = URL.createObjectURL(blob);
@@ -3259,8 +3405,14 @@ function previewImport(file) {
       const watchlist = Array.from(new Set((Array.isArray(data.watchlist) ? data.watchlist : [])
         .map(v => String(v || '').toUpperCase().replace(/[^A-Z.]/g, '').slice(0, 6))
         .filter(v => TICKER_RE.test(v)))).slice(0, MAX_WATCH);
+      const rawNotes = (data.watchNotes && typeof data.watchNotes === 'object') ? data.watchNotes : {};
+      const watchNotes = {};
+      watchlist.forEach(tk => {
+        const n = String(rawNotes[tk] || '').trim().slice(0, 80);
+        if (n) watchNotes[tk] = n;
+      });
       if (!trades.length) throw new Error('No valid trades in file');
-      _importPayload = { trades, positions, watchlist };
+      _importPayload = { trades, positions, watchlist, watchNotes };
 
       const active  = trades.filter(t => t.status === 'active').length;
       const closed  = trades.filter(t => t.status !== 'active').length;
@@ -3300,8 +3452,10 @@ function confirmImport() {
   const incoming = _importPayload.trades || [];
   const incomingPos = _importPayload.positions || [];
   const incomingWatch = _importPayload.watchlist || [];
+  const incomingNotes = _importPayload.watchNotes || {};
   if (_importMode === 'replace') {
-    save({ trades: incoming, positions: incomingPos, watchlist: incomingWatch });
+    save({ trades: incoming, positions: incomingPos,
+           watchlist: incomingWatch, watchNotes: incomingNotes });
   } else {
     // Merge: skip any record whose id already exists
     const current = load();
@@ -3311,6 +3465,8 @@ function confirmImport() {
     current.positions = loadPositions(current).concat(incomingPos.filter(p => !existingPos.has(p.id)));
     const watch = loadWatchlist(current);
     current.watchlist = watch.concat(incomingWatch.filter(tk => !watch.includes(tk))).slice(0, MAX_WATCH);
+    // A note already on this device wins; the backup only fills the gaps
+    current.watchNotes = { ...incomingNotes, ...loadWatchNotes(current) };
     save(current);
   }
   closeOverlay('m-import');
