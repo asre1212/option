@@ -152,11 +152,29 @@ endpoint for a price alone. The last good answer for each ticker is kept in
 quote was taken. A failed refresh keeps the previous quote and records why it failed
 rather than blanking the card.
 
-There is no server and no API key. If a network blocks these feeds, two fallbacks
-exist: **source** (next to the schedule line) sets an optional CORS proxy, used only
-after a direct request has already failed; and **edit** on any card takes the price,
-expiration and two premiums typed straight off your broker, deriving the strikes and
-the ROI from them.
+There is no server and no API key.
+
+In practice the feeds usually **refuse a browser outright**. A page may only read
+another site's data when that site sends an `Access-Control-Allow-Origin` header, and
+these do not, so the request fails before it leaves the device — *"Load failed"* in
+Safari, *"Failed to fetch"* elsewhere. All three providers failing with the same
+message is the signature: the feeds never saw the request, so nothing was down and no
+retry can help.
+
+**source** (under the schedule line) opens the Quote Source sheet, which offers Direct,
+two public relays, or a custom URL, and a **Test This Route** button that asks every
+provider for AAPL through the selected route and prints what each one answered. Which
+route works depends on the network and public relays come and go, so the app finds out
+by trying rather than assuming. Testing never changes the saved route, even if it
+throws.
+
+The durable answer is your own relay: **`quote-relay-worker.js`** is a Cloudflare Worker
+that runs on the free tier, deploys by pasting one file, and takes only the quote-feed
+hosts as targets so it cannot be used as an open proxy. Its URL goes in *Custom*.
+
+Failing all that, **edit** on any card takes the price, expiration and two premiums typed
+straight off your broker, deriving the strikes and the ROI from them — that path needs
+no network at all.
 
 Nothing here is a fill. Delayed mid prices are a starting point for deciding what to
 look at, not what you will get.
@@ -284,6 +302,7 @@ and imports only the valid ones — problem entries stay behind to be fixed. A s
 | `manifest.json` | PWA manifest (install, shortcuts) |
 | `icon.svg` | App icon |
 | `options-tracker.html` | Redirect stub kept for old bookmarks / previously installed PWAs |
+| `quote-relay-worker.js` | Optional Cloudflare Worker that relays the quote feeds past CORS. Not part of the app; deploy it only if you want your own route. |
 
 ## Deploying
 

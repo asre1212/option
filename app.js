@@ -2538,21 +2538,122 @@ function removeWatchItem(tk) {
   });
 }
 
-/* Some networks block these feeds outright. Rather than pretend, let the
-   quote requests be routed through a CORS proxy the user chooses — only
-   ever as a fallback, and only when they have set one. */
-function configureQuoteProxy() {
+/* ── Quote source ──
+   A browser may only read another site's data when that site says it may.
+   These feeds mostly do not, so the request fails before it leaves the
+   device — "Load failed" in Safari, "Failed to fetch" elsewhere — and no
+   amount of retrying changes it. A relay re-issues the request from a
+   server, where that rule does not apply.
+
+   Which relays work is not something this app can know in advance: it
+   depends on the network, and public relays come and go. So rather than
+   pick one, offer a short list and a tester that says exactly what each
+   feed answered on this device. */
+const SOURCE_PRESETS = [
+  { id: 'direct', name: 'Direct', prefix: '',
+    sub: 'No relay. Works only where the feeds allow browser access — usually they do not.' },
+  { id: 'corsproxy', name: 'corsproxy.io', prefix: 'https://corsproxy.io/?url=',
+    sub: 'Public relay. No sign-up, rate-limited, may be busy.' },
+  { id: 'allorigins', name: 'allorigins.win', prefix: 'https://api.allorigins.win/raw?url=',
+    sub: 'Public relay. No sign-up, slower, sometimes down.' },
+  { id: 'custom', name: 'Custom', prefix: null,
+    sub: 'Your own relay — a Cloudflare Worker or anything that takes ?url=.' }
+];
+
+let _srcPick = 'direct';
+
+function presetForPrefix(prefix) {
+  if (!prefix) return 'direct';
+  const hit = SOURCE_PRESETS.find(p => p.prefix === prefix);
+  return hit ? hit.id : 'custom';
+}
+
+function openQuoteSource() {
   const cur = quoteProxy();
-  const val = prompt(
-    'Optional: a CORS proxy prefix to fall back on when a quote feed cannot be reached directly.\n\n'
-    + 'The ticker URL is appended, URL-encoded. Example:\n'
-    + 'https://corsproxy.io/?url=\n\n'
-    + 'Leave blank to use direct requests only.', cur);
-  if (val === null) return;
-  const v = val.trim();
-  if (v && !/^https:\/\//i.test(v)) { alert('The proxy must be an https:// address.'); return; }
-  if (v) localStorage.setItem(PROXY_KEY, v); else localStorage.removeItem(PROXY_KEY);
+  _srcPick = presetForPrefix(cur);
+  document.getElementById('src-custom').value = _srcPick === 'custom' ? cur : '';
+  document.getElementById('src-result').innerHTML = '';
+  renderSourceOptions();
+  openOverlay('m-wlsource');
+}
+
+function renderSourceOptions() {
+  document.getElementById('src-list').innerHTML = SOURCE_PRESETS.map(p =>
+    `<button class="src-opt${p.id === _srcPick ? ' selected' : ''}" onclick="pickQuoteSource('${p.id}')">
+      <div class="src-opt-name">${esc(p.name)}</div>
+      <div class="src-opt-sub">${esc(p.sub)}</div>
+    </button>`).join('');
+  document.getElementById('src-custom-wrap').style.display = _srcPick === 'custom' ? 'block' : 'none';
+}
+
+function pickQuoteSource(id) {
+  _srcPick = id;
+  document.getElementById('src-result').innerHTML = '';
+  renderSourceOptions();
+}
+
+// The prefix the sheet is currently proposing, before it is saved
+function pendingPrefix() {
+  if (_srcPick === 'custom') return (document.getElementById('src-custom').value || '').trim();
+  return (SOURCE_PRESETS.find(p => p.id === _srcPick) || {}).prefix || '';
+}
+
+function saveQuoteSource() {
+  const prefix = pendingPrefix();
+  if (prefix && !/^https:\/\//i.test(prefix)) {
+    alert('A relay must be an https:// address ending in something like ?url='); return;
+  }
+  if (prefix) localStorage.setItem(PROXY_KEY, prefix); else localStorage.removeItem(PROXY_KEY);
+  closeOverlay('m-wlsource');
   renderWatchlist();
+  if (prefix) refreshWatchlist(true);
+}
+
+/* Ask every provider directly, with the route being proposed, and report
+   what each one actually said. This is the only way to find out — the
+   answer depends on the device and the network, not on the code. */
+async function testQuoteSource() {
+  const prefix = pendingPrefix();
+  if (_srcPick === 'custom' && !prefix) { alert('Enter your relay URL first.'); return; }
+  if (prefix && !/^https:\/\//i.test(prefix)) { alert('A relay must be an https:// address.'); return; }
+
+  const box = document.getElementById('src-result');
+  box.innerHTML = `<div class="src-res"><div class="src-res-hdr">Testing AAPL…</div></div>`;
+
+  // Point the request layer at the route under test, then put it back
+  const saved = quoteProxy();
+  if (prefix) localStorage.setItem(PROXY_KEY, prefix); else localStorage.removeItem(PROXY_KEY);
+
+  const rows = [];
+  let winner = null;
+  try {
+    for (const p of PROVIDERS) {
+      try {
+        const r = await p.fn('AAPL', !!prefix);
+        const legs = r.chain.length ? buildLegs(r.price, r.chain) : null;
+        rows.push({ name: p.name, ok: true,
+          msg: `${fmtMoney(r.price)}${legs ? ` · chain ${fmtInt(legs.dte)}d` : ' · price only'}` });
+        if (!winner) winner = p.name;
+      } catch (e) {
+        rows.push({ name: p.name, ok: false, msg: String(e.message || e).slice(0, 120) });
+      }
+    }
+  } finally {
+    if (saved) localStorage.setItem(PROXY_KEY, saved); else localStorage.removeItem(PROXY_KEY);
+  }
+
+  const label = _srcPick === 'direct' ? 'Direct' : (SOURCE_PRESETS.find(p => p.id === _srcPick) || {}).name;
+  box.innerHTML = `<div class="src-res">
+    <div class="src-res-hdr ${winner ? 'ok' : 'bad'}">
+      ${winner ? `✓ ${esc(label)} works — ${esc(winner)} answered` : `✗ ${esc(label)} reached nothing`}
+    </div>
+    ${rows.map(r => `<div class="src-row">
+      <div class="src-row-name">${esc(r.name)}</div>
+      <div class="src-row-msg${r.ok ? ' ok' : ''}">${esc(r.msg)}</div>
+    </div>`).join('')}
+  </div>${winner ? '' : `<div class="risk-note" style="margin-top:10px">
+    Every feed refused on this route. Try another one above — or enter prices by hand,
+    which always works.</div>`}`;
 }
 
 /* ── Manual quote entry ──
@@ -2709,8 +2810,8 @@ function renderWatchlist() {
          >sort: ${sort === 'roi' ? 'yield' : 'added'}</button>`
     + `<button class="wl-x wl-ctl${target != null ? ' on' : ''}" onclick="configureWatchTarget()"
          >target: ${target == null ? 'off' : fmtPct(target)}</button>`
-    + `<button class="wl-x wl-ctl${quoteProxy() ? ' on' : ''}" onclick="configureQuoteProxy()"
-         title="Fallback route for quote requests">source</button>`;
+    + `<button class="wl-x wl-ctl${quoteProxy() ? ' on' : ''}" onclick="openQuoteSource()"
+         title="How quote requests reach the feeds">source: ${quoteProxy() ? 'relay' : 'direct'}</button>`;
 
   if (!list.length) {
     el.innerHTML = `<div class="empty">
@@ -2765,8 +2866,19 @@ function watchCardHTML(tk, q, note, target) {
     body = `<div class="wl-err">No option chain for this symbol${q.error ? ` — <b>${esc(q.error)}</b>` : ''}.
       <button class="wl-x" onclick="openManualQuote('${esc(tk)}')">enter by hand</button></div>`;
   } else if (q?.error) {
-    body = `<div class="wl-err"><b>Couldn't fetch a quote.</b> ${esc(q.error)}
-      <button class="wl-x" onclick="openManualQuote('${esc(tk)}')">enter by hand</button></div>`;
+    // "Load failed" / "Failed to fetch" is the browser refusing to read another
+    // site, not the feed being down. Retrying cannot fix it, so point at the
+    // two things that can.
+    const blocked = /load failed|failed to fetch|networkerror/i.test(q.error);
+    body = `<div class="wl-err">
+      <b>${blocked ? 'The feeds are blocking this browser.' : "Couldn't fetch a quote."}</b>
+      ${blocked ? 'They refused the request before it left the device — a relay or a hand-entered price is the way through.' : esc(q.error)}
+      <div style="margin-top:5px">
+        <button class="wl-x wl-ctl" onclick="openQuoteSource()">fix the source</button>
+        <button class="wl-x wl-ctl" onclick="openManualQuote('${esc(tk)}')">enter by hand</button>
+      </div>
+      ${blocked ? `<div style="margin-top:5px;color:var(--text3)">${esc(q.error)}</div>` : ''}
+    </div>`;
   } else {
     body = `<div class="wl-loading">${pending ? 'Fetching…' : 'No quote yet — tap Refresh.'}</div>`;
   }

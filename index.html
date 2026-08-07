@@ -391,6 +391,36 @@
     .wl-err b{color:var(--text2)}
     .wl-loading{padding:9px 12px;font-size:9px;color:var(--text3);border-top:1px solid var(--border)}
 
+    /* ── QUOTE SOURCE SHEET ── */
+    .src-list{display:flex;flex-direction:column;gap:7px}
+    .src-opt{
+      display:block;width:100%;text-align:left;padding:10px 12px;
+      border-radius:10px;border:1px solid var(--border);background:var(--bg);
+      color:var(--text2);font-family:inherit;cursor:pointer;transition:all .15s;
+    }
+    .src-opt.selected{border-color:rgba(26,95,175,.4);background:rgba(26,95,175,.07)}
+    .src-opt-name{font-size:11px;font-weight:600;color:var(--text)}
+    .src-opt.selected .src-opt-name{color:var(--blue)}
+    .src-opt-sub{font-size:9px;color:var(--text3);margin-top:3px;line-height:1.5}
+    .src-res{
+      margin-top:11px;border:1px solid var(--border);border-radius:10px;
+      overflow:hidden;background:var(--card);
+    }
+    .src-res-hdr{
+      padding:9px 12px;font-size:10px;font-weight:600;
+      border-bottom:1px solid var(--border);
+    }
+    .src-res-hdr.ok{background:var(--green-dim);color:var(--green)}
+    .src-res-hdr.bad{background:var(--amber-dim);color:var(--amber)}
+    .src-row{
+      display:flex;justify-content:space-between;gap:8px;padding:7px 12px;
+      font-size:9px;border-bottom:1px solid rgba(0,0,0,.05);line-height:1.5;
+    }
+    .src-row:last-child{border-bottom:none}
+    .src-row-name{font-weight:600;color:var(--text2);flex-shrink:0}
+    .src-row-msg{text-align:right;color:var(--text3);word-break:break-word}
+    .src-row-msg.ok{color:var(--green)}
+
     /* ── ROI CALC TAB ── */
     .calc-wrap{padding:18px 14px 90px}
     .roi-card{
@@ -1693,6 +1723,57 @@
         <div class="rp-val" id="cp-roi" style="color:var(--blue)">—</div>
       </div>
       <button class="sub-btn" onclick="confirmClosePos()">Record Sale</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ MODAL: QUOTE DATA SOURCE ═══ -->
+<div class="overlay" id="m-wlsource" data-keep-open>
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-hdr">
+      <div class="sheet-title">Quote Source</div>
+      <button class="sheet-close" onclick="closeOverlay('m-wlsource')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="sheet-body">
+      <div class="info-box">
+        <b>“Load failed” means the browser refused the request, not that the feed was down.</b>
+        A page can only read another site's data if that site allows it (CORS). When a feed
+        doesn't, the request never leaves — and no retry will fix it. A relay re-issues the
+        request from a server, which is not bound by that rule.
+      </div>
+
+      <div class="fl" style="margin-bottom:7px">Route</div>
+      <div class="src-list" id="src-list"></div>
+
+      <div class="fg" id="src-custom-wrap" style="display:none;margin-top:11px">
+        <label class="fl">Relay URL prefix</label>
+        <input class="fi" id="src-custom" placeholder="https://your-worker.workers.dev/?url="
+               autocapitalize="off" autocorrect="off" spellcheck="false">
+      </div>
+
+      <button class="excel-btn" style="margin-top:12px" onclick="testQuoteSource()">
+        <div class="excel-btn-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        </div>
+        <div class="excel-btn-text">
+          <div class="excel-btn-title">Test This Route</div>
+          <div class="excel-btn-sub">Tries every feed for AAPL and reports exactly what each one said</div>
+        </div>
+      </button>
+
+      <div id="src-result"></div>
+
+      <div class="info-box" style="margin-top:12px">
+        A relay sees which tickers you look up — nothing else. Your trades never leave the
+        device. If you would rather not use someone else's server, the most reliable option
+        is your own: a Cloudflare Worker on the free tier does this in a few lines, and its
+        URL goes in <b>Custom</b>.
+      </div>
+
+      <button class="sub-btn" onclick="saveQuoteSource()">Save</button>
     </div>
   </div>
 </div>
