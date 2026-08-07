@@ -24,6 +24,8 @@
 ───────────────────────────────────────── */
 
 const ALLOWED_HOSTS = [
+  'api.massive.com',            // Massive (formerly Polygon.io)
+  'api.polygon.io',             // its legacy hostname, still served
   'cdn.cboe.com',
   'query1.finance.yahoo.com',
   'query2.finance.yahoo.com'
