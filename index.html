@@ -1750,6 +1750,12 @@
         <input class="fi" id="src-key" placeholder="paste your key" type="text"
                autocapitalize="off" autocorrect="off" spellcheck="false">
       </div>
+      <button class="src-opt" id="src-relaykey" onclick="toggleRelayKey()" style="margin-bottom:11px">
+        <div class="src-opt-name">My relay holds the key</div>
+        <div class="src-opt-sub">Better: the key lives as a secret on your own Worker and is added
+          at the edge, so it is never on this device and never in a URL. Leave the box above empty.
+          Needs the Custom route — a public relay is never trusted with it.</div>
+      </button>
       <div class="info-box" style="margin-top:-4px">
         <b>massive.com</b> (formerly Polygon.io) is a real options data product rather than a
         public endpoint read sideways. The <b>Options Basic</b> plan is free — no card — and

@@ -2121,8 +2121,13 @@ const isoFromUnix = s => new Date(numOr0(s) * 1000).toISOString().slice(0, 10);
    expirations this strategy cares about, so the response stays small; the
    previous close comes from the aggregates endpoint, which is what turns a
    price into the day's move. */
-const MASSIVE_KEY = 'opts_massive_key';
-const massiveKey  = () => (localStorage.getItem(MASSIVE_KEY) || '').trim();
+const MASSIVE_KEY  = 'opts_massive_key';
+const RELAY_KEY    = 'opts_massive_relay_key';
+const massiveKey   = () => (localStorage.getItem(MASSIVE_KEY) || '').trim();
+// The better arrangement: the key lives as a secret on your own relay and is
+// attached at the edge, so it is never on the phone and never in a URL.
+const relayHoldsKey  = () => localStorage.getItem(RELAY_KEY) === '1';
+const massiveEnabled = () => !!massiveKey() || relayHoldsKey();
 
 // A relay sees the whole URL, and for Massive the key is in the URL. Somebody
 // else's relay therefore must never carry it — a leaked key is spendable by
@@ -2134,9 +2139,12 @@ const proxyIsPublic = () => {
 
 async function providerMassive(ticker, viaProxy) {
   const key = massiveKey();
-  if (!key) throw new Error('no API key set');
+  if (!key && !relayHoldsKey()) throw new Error('no API key set');
   if (viaProxy && proxyIsPublic()) throw new Error('skipped — a key is never sent through a public relay');
-  const k = encodeURIComponent(key);
+  // With the key held by the relay there is nothing to authenticate a direct
+  // request with, so that pass is skipped rather than sent to be rejected.
+  if (!key && !viaProxy) throw new Error('relay holds the key — needs the relay route');
+  const auth = key ? `&apiKey=${encodeURIComponent(key)}` : '';
   const t = encodeURIComponent(ticker);
 
   // Ask only for the expirations that could win, widening once if the
@@ -2147,7 +2155,7 @@ async function providerMassive(ticker, viaProxy) {
       `https://api.massive.com/v3/snapshot/options/${t}`
       + `?contract_type=put&limit=250`
       + `&expiration_date.gte=${dateOffset(lo)}&expiration_date.lte=${dateOffset(hi)}`
-      + `&apiKey=${k}`, viaProxy);
+      + auth, viaProxy);
     results = Array.isArray(j?.results) ? j.results : [];
     if (results.length) break;
   }
@@ -2178,7 +2186,7 @@ async function providerMassive(ticker, viaProxy) {
   let prevClose = null;
   try {
     const p = await fetchJSON(
-      `https://api.massive.com/v2/aggs/ticker/${t}/prev?adjusted=true&apiKey=${k}`, viaProxy);
+      `https://api.massive.com/v2/aggs/ticker/${t}/prev?adjusted=true` + auth, viaProxy);
     prevClose = numOrNull(p?.results?.[0]?.c);
     if (price == null) price = prevClose;
   } catch (e) { /* the chain is the point; the day's move is a bonus */ }
@@ -2288,7 +2296,7 @@ const SCRAPE_PROVIDERS = [
   { name: 'Yahoo',    fn: providerYahoo },
   { name: 'Yahoo·px', fn: providerYahooPrice }
 ];
-const providers = () => (massiveKey()
+const providers = () => (massiveEnabled()
   ? [{ name: 'Massive', fn: providerMassive }, ...SCRAPE_PROVIDERS]
   : SCRAPE_PROVIDERS);
 
@@ -2385,7 +2393,7 @@ const STAGGER_SCHEDULED = 9000;
 const STAGGER_MANUAL    = 1200;
 const STAGGER_JITTER    = 3000;
 const STAGGER_KEYED     = 26000;
-const staggerFor = manual => massiveKey()
+const staggerFor = manual => massiveEnabled()
   ? STAGGER_KEYED
   : (manual ? STAGGER_MANUAL : STAGGER_SCHEDULED);
 
@@ -2464,9 +2472,15 @@ async function refreshWatchlist(manual, slotLabel) {
    The few minutes of stagger are per install, per day: a stable random offset
    after the slot time, so two phones running this do not hit the same feed on
    the same second. */
+/* Through the session rather than only its first half. The regular hours are
+   9:30 to 4:00, so these sit about two and a half hours apart, with the last
+   deliberately closer to the bell than to the one before it — an evening
+   glance at the watchlist should show closing prices, not mid-afternoon ones. */
 const MARKET_SLOTS = [
-  { key: 'open', h: 9,  m: 31, label: '9:31 am ET' },
-  { key: 'noon', h: 12, m: 0,  label: '12:00 pm ET' }
+  { key: 'open',  h: 9,  m: 31, label: '9:31 am ET' },
+  { key: 'noon',  h: 12, m: 0,  label: '12:00 pm ET' },
+  { key: 'aft',   h: 14, m: 30, label: '2:30 pm ET' },
+  { key: 'close', h: 15, m: 58, label: '3:58 pm ET' }
 ];
 const SLOT_SPREAD_MIN = 4;   // up to this many minutes late, on purpose
 
@@ -2578,12 +2592,17 @@ function scheduleText() {
   const m     = marketNow();
   const store = loadMarket();
   const runs  = store.runs || {};
-  if (m.weekend) return 'Markets are closed for the weekend — next update Monday at <b>9:31 am ET</b>.';
+  // Built from the slots themselves, so the sentence cannot drift from what
+  // actually runs if the times are ever changed.
+  const times = MARKET_SLOTS.map(s => `<b>${s.label.replace(' ET', '')}</b>`).join(', ');
+  if (m.weekend) {
+    return `Markets are closed for the weekend — next update Monday at <b>${MARKET_SLOTS[0].label}</b>.`;
+  }
   const next = MARKET_SLOTS.find(s => runs[s.key] !== m.date);
-  const done = MARKET_SLOTS.filter(s => runs[s.key] === m.date).map(s => s.label);
-  return `Updates at <b>9:31 am</b> and <b>12:00 pm ET</b>, spread over a few minutes.`
-    + (done.length ? ` Ran today at ${done.join(' and ')}.` : '')
-    + (next ? ` Next: <b>${next.label}</b>.` : ' Both of today\'s runs are done.');
+  const done = MARKET_SLOTS.filter(s => runs[s.key] === m.date).length;
+  return `Updates through the session at ${times} ET, spread over a few minutes.`
+    + (done ? ` ${fmtInt(done)} of ${fmtInt(MARKET_SLOTS.length)} done today.` : '')
+    + (next ? ` Next: <b>${next.label}</b>.` : ` All of today's runs are done.`);
 }
 
 /* ── Watchlist edits ── */
@@ -2670,9 +2689,18 @@ function openQuoteSource() {
   _srcPick = presetForPrefix(cur);
   document.getElementById('src-custom').value = _srcPick === 'custom' ? cur : '';
   document.getElementById('src-key').value    = massiveKey();
+  _srcRelayKey = relayHoldsKey();
   document.getElementById('src-result').innerHTML = '';
   renderSourceOptions();
   openOverlay('m-wlsource');
+}
+
+let _srcRelayKey = false;
+
+function toggleRelayKey() {
+  _srcRelayKey = !_srcRelayKey;
+  document.getElementById('src-result').innerHTML = '';
+  renderSourceOptions();
 }
 
 // The key is part of "how quotes are fetched", so the sheet applies it before
@@ -2680,6 +2708,7 @@ function openQuoteSource() {
 function applyPendingKey() {
   const k = (document.getElementById('src-key').value || '').trim();
   if (k) localStorage.setItem(MASSIVE_KEY, k); else localStorage.removeItem(MASSIVE_KEY);
+  if (_srcRelayKey) localStorage.setItem(RELAY_KEY, '1'); else localStorage.removeItem(RELAY_KEY);
   return k;
 }
 
@@ -2690,6 +2719,7 @@ function renderSourceOptions() {
       <div class="src-opt-sub">${esc(p.sub)}</div>
     </button>`).join('');
   document.getElementById('src-custom-wrap').style.display = _srcPick === 'custom' ? 'block' : 'none';
+  document.getElementById('src-relaykey').classList.toggle('selected', _srcRelayKey);
 }
 
 function pickQuoteSource(id) {
@@ -2708,6 +2738,11 @@ function saveQuoteSource() {
   const prefix = pendingPrefix();
   if (prefix && !/^https:\/\//i.test(prefix)) {
     alert('A relay must be an https:// address ending in something like ?url='); return;
+  }
+  // A relay-held key only means anything on your own relay
+  if (_srcRelayKey && (_srcPick !== 'custom' || !prefix)) {
+    alert('"My relay holds the key" needs the Custom route — set your Worker URL first, or untick it.');
+    return;
   }
   applyPendingKey();
   if (prefix) localStorage.setItem(PROXY_KEY, prefix); else localStorage.removeItem(PROXY_KEY);
