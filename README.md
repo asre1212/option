@@ -145,14 +145,26 @@ alongside the watchlist itself; on a merge import, a note already on the device 
 
 ### Where the quotes come from
 
-Delayed public feeds, tried in order until one answers: Cboe's delayed-quote CDN
-(underlying and full chain in one request), then Yahoo Finance, then Yahoo's chart
-endpoint for a price alone. The last good answer for each ticker is kept in
-`localStorage`, so the tab is never blank, works offline, and shows the time each
-quote was taken. A failed refresh keeps the previous quote and records why it failed
-rather than blanking the card.
+**Massive** (formerly Polygon.io) is the intended source — the only one here that is a
+data product rather than a public endpoint read sideways. Its **Options Basic** plan is
+free, needs no card, and gives 15-minute delayed chains at 5 requests a minute, which
+is ample for two updates a day. Paste the key into *Watchlist → source*. It matters
+structurally as well as legally: the key travels as a query parameter, so the request
+stays a simple GET with no preflight — the shape most likely to survive the browser's
+cross-origin rules with no relay at all.
 
-There is no server and no API key.
+Two calls per ticker: the chain snapshot, filtered server-side to expirations near 45
+days, and the previous close, which is what turns a price into the day's move. With a
+key set the refresh slows to one symbol every 26 seconds to stay inside the free
+allowance; losing the previous-close call costs only the percentage change.
+
+Without a key it falls back to scraping public endpoints — Cboe's delayed-quote CDN,
+then Yahoo Finance, then Yahoo's chart endpoint for a price alone. These usually refuse
+a browser outright (see below).
+
+The last good answer for each ticker is kept in `localStorage`, so the tab is never
+blank, works offline, and shows the time each quote was taken. A failed refresh keeps
+the previous quote and records why it failed rather than blanking the card.
 
 In practice the feeds usually **refuse a browser outright**. A page may only read
 another site's data when that site sends an `Access-Control-Allow-Origin` header, and
@@ -171,6 +183,12 @@ throws.
 The durable answer is your own relay: **`quote-relay-worker.js`** is a Cloudflare Worker
 that runs on the free tier, deploys by pasting one file, and takes only the quote-feed
 hosts as targets so it cannot be used as an open proxy. Its URL goes in *Custom*.
+
+**A public relay never carries the Massive key.** A relay sees the whole URL, and for
+Massive the key is in the URL; a leaked key is spendable by whoever reads it. So when
+the configured relay is one of the built-in public ones, Massive is skipped on the relay
+pass entirely and says so, rather than quietly handing a credential to a stranger. Your
+own relay is exempt — that is what *Custom* is for.
 
 Failing all that, **edit** on any card takes the price, expiration and two premiums typed
 straight off your broker, deriving the strikes and the ROI from them — that path needs

@@ -2109,6 +2109,88 @@ function parseOcc(sym) {
 
 const isoFromUnix = s => new Date(numOr0(s) * 1000).toISOString().slice(0, 10);
 
+/* ── Provider: Massive (formerly Polygon.io) ──
+   The only one of these that is an actual data product rather than a public
+   endpoint being read sideways: a free Options Basic key, 15-minute delayed,
+   5 requests a minute. It matters here for one structural reason — the key
+   goes in a query parameter rather than a header, so the request stays a
+   simple GET with no preflight, which is the shape most likely to survive
+   the browser's cross-origin rules.
+
+   Two calls per ticker. The chain snapshot is filtered server-side to the
+   expirations this strategy cares about, so the response stays small; the
+   previous close comes from the aggregates endpoint, which is what turns a
+   price into the day's move. */
+const MASSIVE_KEY = 'opts_massive_key';
+const massiveKey  = () => (localStorage.getItem(MASSIVE_KEY) || '').trim();
+
+// A relay sees the whole URL, and for Massive the key is in the URL. Somebody
+// else's relay therefore must never carry it — a leaked key is spendable by
+// whoever reads it. Your own relay is fine; that is the point of Custom.
+const proxyIsPublic = () => {
+  const p = quoteProxy();
+  return !!p && SOURCE_PRESETS.some(s => s.pub && s.prefix === p);
+};
+
+async function providerMassive(ticker, viaProxy) {
+  const key = massiveKey();
+  if (!key) throw new Error('no API key set');
+  if (viaProxy && proxyIsPublic()) throw new Error('skipped — a key is never sent through a public relay');
+  const k = encodeURIComponent(key);
+  const t = encodeURIComponent(ticker);
+
+  // Ask only for the expirations that could win, widening once if the
+  // window is empty (a thin chain, or a holiday-shifted cycle).
+  let results = [];
+  for (const [lo, hi] of [[TARGET_DTE - DTE_WINDOW, TARGET_DTE + DTE_WINDOW], [20, 90]]) {
+    const j = await fetchJSON(
+      `https://api.massive.com/v3/snapshot/options/${t}`
+      + `?contract_type=put&limit=250`
+      + `&expiration_date.gte=${dateOffset(lo)}&expiration_date.lte=${dateOffset(hi)}`
+      + `&apiKey=${k}`, viaProxy);
+    results = Array.isArray(j?.results) ? j.results : [];
+    if (results.length) break;
+  }
+  if (!results.length) throw new Error('no put contracts returned');
+
+  const chain = [];
+  let price = null;
+  results.forEach(r => {
+    const d = r?.details;
+    const strike = numOrNull(d?.strike_price);
+    const expiry = d?.expiration_date;
+    if (strike == null || strike <= 0 || !DATE_RE.test(expiry || '')) return;
+    if (price == null) price = numOrNull(r?.underlying_asset?.price);
+    chain.push({
+      expiry, strike,
+      bid:  numOrNull(r?.last_quote?.bid) ?? 0,
+      ask:  numOrNull(r?.last_quote?.ask) ?? 0,
+      // Free entitlements may withhold live quotes; the contract's own close
+      // is the honest fallback and is labelled "last" on the card.
+      last: numOrNull(r?.last_trade?.price) ?? numOrNull(r?.day?.close) ?? 0,
+      oi:   numOrNull(r?.open_interest) ?? 0
+    });
+  });
+  if (!chain.length) throw new Error('no usable contracts');
+
+  // Previous close — gives the day's move, and stands in for the underlying
+  // price when the plan does not include it on the snapshot.
+  let prevClose = null;
+  try {
+    const p = await fetchJSON(
+      `https://api.massive.com/v2/aggs/ticker/${t}/prev?adjusted=true&apiKey=${k}`, viaProxy);
+    prevClose = numOrNull(p?.results?.[0]?.c);
+    if (price == null) price = prevClose;
+  } catch (e) { /* the chain is the point; the day's move is a bonus */ }
+
+  if (price == null || price <= 0) throw new Error('no underlying price');
+  return {
+    price, prevClose,
+    changePct: prevClose > 0 ? (price - prevClose) / prevClose * 100 : null,
+    chain, source: 'Massive'
+  };
+}
+
 /* ── Provider: Cboe delayed quotes ──
    One request returns the underlying and its whole option chain, which is
    exactly the shape this tab needs. */
@@ -2199,11 +2281,16 @@ async function providerYahooPrice(ticker, viaProxy) {
   };
 }
 
-const PROVIDERS = [
-  { name: 'Cboe',   fn: providerCboe },
-  { name: 'Yahoo',  fn: providerYahoo },
+/* Massive leads when a key is set — it is the only one of these anybody is
+   entitled to read from a browser. The scrapes stay on as a fallback. */
+const SCRAPE_PROVIDERS = [
+  { name: 'Cboe',     fn: providerCboe },
+  { name: 'Yahoo',    fn: providerYahoo },
   { name: 'Yahoo·px', fn: providerYahooPrice }
 ];
+const providers = () => (massiveKey()
+  ? [{ name: 'Massive', fn: providerMassive }, ...SCRAPE_PROVIDERS]
+  : SCRAPE_PROVIDERS);
 
 /* Try each provider directly; only if every one fails do we make a second
    pass through the configured proxy, so a working direct route is never
@@ -2212,7 +2299,7 @@ async function fetchQuote(ticker) {
   const errs = [];
   let backedOff = false;   // one pause per ticker, however many feeds throttle
   for (const viaProxy of (quoteProxy() ? [false, true] : [false])) {
-    for (const p of PROVIDERS) {
+    for (const p of providers()) {
       try {
         const r = await p.fn(ticker, viaProxy);
         if (viaProxy) r.source += ' via proxy';
@@ -2288,9 +2375,19 @@ function buildLegs(price, chain) {
    spreads itself over minutes on purpose: these are free public endpoints and
    a burst from every open copy of the app at 9:31:00 is what gets throttled.
    A manual refresh is a single deliberate act, so it uses a short gap. */
+/* Massive's free tier allows 5 requests a minute and this makes two calls per
+   ticker — chain plus previous close — so a symbol every 26 seconds keeps a
+   run comfortably inside the allowance. Without a key the limits are whatever
+   the public endpoints tolerate, where the concern is politeness rather than a
+   published number. A scheduled run is meant to take minutes; a manual one is
+   a single deliberate act and hurries, but never past the quota. */
 const STAGGER_SCHEDULED = 9000;
 const STAGGER_MANUAL    = 1200;
 const STAGGER_JITTER    = 3000;
+const STAGGER_KEYED     = 26000;
+const staggerFor = manual => massiveKey()
+  ? STAGGER_KEYED
+  : (manual ? STAGGER_MANUAL : STAGGER_SCHEDULED);
 
 let _wlRunning = false;
 let _wlPending = {};      // ticker → true while its request is in flight
@@ -2336,7 +2433,7 @@ async function refreshWatchlist(manual, slotLabel) {
   }
   _wlRunning = true;
   renderWatchlist();
-  const gap = manual ? STAGGER_MANUAL : STAGGER_SCHEDULED;
+  const gap = staggerFor(manual);
   let fresh = 0;
   try {
     for (let i = 0; i < list.length; i++) {
@@ -2552,10 +2649,10 @@ function removeWatchItem(tk) {
 const SOURCE_PRESETS = [
   { id: 'direct', name: 'Direct', prefix: '',
     sub: 'No relay. Works only where the feeds allow browser access — usually they do not.' },
-  { id: 'corsproxy', name: 'corsproxy.io', prefix: 'https://corsproxy.io/?url=',
-    sub: 'Public relay. No sign-up, rate-limited, may be busy.' },
-  { id: 'allorigins', name: 'allorigins.win', prefix: 'https://api.allorigins.win/raw?url=',
-    sub: 'Public relay. No sign-up, slower, sometimes down.' },
+  { id: 'corsproxy', name: 'corsproxy.io', prefix: 'https://corsproxy.io/?url=', pub: true,
+    sub: 'Public relay. No sign-up, rate-limited, may be busy. Never carries your API key.' },
+  { id: 'allorigins', name: 'allorigins.win', prefix: 'https://api.allorigins.win/raw?url=', pub: true,
+    sub: 'Public relay. No sign-up, slower, sometimes down. Never carries your API key.' },
   { id: 'custom', name: 'Custom', prefix: null,
     sub: 'Your own relay — a Cloudflare Worker or anything that takes ?url=.' }
 ];
@@ -2572,9 +2669,18 @@ function openQuoteSource() {
   const cur = quoteProxy();
   _srcPick = presetForPrefix(cur);
   document.getElementById('src-custom').value = _srcPick === 'custom' ? cur : '';
+  document.getElementById('src-key').value    = massiveKey();
   document.getElementById('src-result').innerHTML = '';
   renderSourceOptions();
   openOverlay('m-wlsource');
+}
+
+// The key is part of "how quotes are fetched", so the sheet applies it before
+// testing — otherwise Test would report on a route the user is not proposing.
+function applyPendingKey() {
+  const k = (document.getElementById('src-key').value || '').trim();
+  if (k) localStorage.setItem(MASSIVE_KEY, k); else localStorage.removeItem(MASSIVE_KEY);
+  return k;
 }
 
 function renderSourceOptions() {
@@ -2603,6 +2709,7 @@ function saveQuoteSource() {
   if (prefix && !/^https:\/\//i.test(prefix)) {
     alert('A relay must be an https:// address ending in something like ?url='); return;
   }
+  applyPendingKey();
   if (prefix) localStorage.setItem(PROXY_KEY, prefix); else localStorage.removeItem(PROXY_KEY);
   closeOverlay('m-wlsource');
   renderWatchlist();
@@ -2622,12 +2729,13 @@ async function testQuoteSource() {
 
   // Point the request layer at the route under test, then put it back
   const saved = quoteProxy();
+  applyPendingKey();
   if (prefix) localStorage.setItem(PROXY_KEY, prefix); else localStorage.removeItem(PROXY_KEY);
 
   const rows = [];
   let winner = null;
   try {
-    for (const p of PROVIDERS) {
+    for (const p of providers()) {
       try {
         const r = await p.fn('AAPL', !!prefix);
         const legs = r.chain.length ? buildLegs(r.price, r.chain) : null;

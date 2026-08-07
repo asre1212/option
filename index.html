@@ -1741,8 +1741,21 @@
       <div class="info-box">
         <b>“Load failed” means the browser refused the request, not that the feed was down.</b>
         A page can only read another site's data if that site allows it (CORS). When a feed
-        doesn't, the request never leaves — and no retry will fix it. A relay re-issues the
-        request from a server, which is not bound by that rule.
+        doesn't, the request never leaves — and no retry will fix it. Two ways through: a
+        data provider that permits it, or a relay that re-issues the request from a server.
+      </div>
+
+      <div class="fg">
+        <label class="fl">Massive API key — the recommended route</label>
+        <input class="fi" id="src-key" placeholder="paste your key" type="text"
+               autocapitalize="off" autocorrect="off" spellcheck="false">
+      </div>
+      <div class="info-box" style="margin-top:-4px">
+        <b>massive.com</b> (formerly Polygon.io) is a real options data product rather than a
+        public endpoint read sideways. The <b>Options Basic</b> plan is free — no card — and
+        gives 15-minute delayed chains at 5 requests a minute, which is ample for two updates
+        a day. Its key travels as a query parameter, so the request stays simple and stands
+        the best chance of working with no relay at all. When a key is set it is tried first.
       </div>
 
       <div class="fl" style="margin-bottom:7px">Route</div>
