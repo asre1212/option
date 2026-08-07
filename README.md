@@ -19,7 +19,8 @@ in your browser's localStorage; nothing is sent to a server.
   alone beats your realized average.
 - **Watchlist** — tickers and ETFs you are thinking about, each showing price, the
   day's move, and what a put is paying 5% and 10% out of the money at ~45 days,
-  with the annualized ROI. Refreshed at 9:31 am and noon ET. See below.
+  with the annualized ROI. Refreshed through the session, 9:31 am to just before
+  the close, ET. See below.
 - **Analysis** — realized P&L, capital-weighted annualized ROI, win rate, average
   holding period, month-by-month performance with every closed position and what
   it earned, and breakdowns by term written, ticker and type.
@@ -124,7 +125,7 @@ Three controls sit under the schedule line:
   marked, and if expiry reminders are switched on, a scheduled update notifies you when
   something crosses it: once a day, and only for tickers that were not already above
   the line at the previous run. A stale quote never counts as clearing it.
-- **source** — the optional CORS proxy described below.
+- **source** — the data provider, API key and relay route, described below.
 
 **edit** on a card opens a per-ticker sheet holding a free-text **note** ("earnings
 8/12", "wait for $210") shown on the card, and the manual quote fields. The note saves
@@ -184,6 +185,14 @@ The durable answer is your own relay: **`quote-relay-worker.js`** is a Cloudflar
 that runs on the free tier, deploys by pasting one file, and takes only the quote-feed
 hosts as targets so it cannot be used as an open proxy. Its URL goes in *Custom*.
 
+**Better still, don't hold the key at all.** Set `MASSIVE_KEY` as a secret on your own
+Worker (*Settings → Variables and Secrets → Secret*) and tick **my relay holds the key**
+in the app. The key is attached at the edge on the way out, so it is never on the phone,
+never in `localStorage`, and never in a URL anything could log. A Cloudflare secret is
+write-only — replaceable, but not readable back out of the dashboard. With the key held
+this way the direct route is skipped rather than sent unauthenticated, and the relay
+answers `401` with an explanation if the secret is missing.
+
 **A public relay never carries the Massive key.** A relay sees the whole URL, and for
 Massive the key is in the URL; a leaked key is spendable by whoever reads it. So when
 the configured relay is one of the built-in public ones, Massive is skipped on the relay
@@ -199,9 +208,12 @@ look at, not what you will get.
 
 ### Refresh schedule
 
-Twice a day, on New York time: **9:31 am** — a minute after the open, so the first
-prints have happened — and **12:00 pm**. Weekends are skipped; market holidays are
-not modelled, so a holiday simply carries the previous close forward.
+Four times through the session, on New York time: **9:31 am** — a minute after the
+open, so the first prints have happened — then **12:00 pm**, **2:30 pm** and **3:58 pm**.
+The last sits closer to the bell than to the one before it on purpose: an evening
+glance at the watchlist should show closing prices, not mid-afternoon ones. Weekends
+are skipped; market holidays are not modelled, so a holiday simply carries the
+previous close forward.
 
 A page with no server can only act while it is open, so rather than relying on a
 timer alone, every entry point — launch, returning to the app, coming back online,

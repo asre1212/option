@@ -1,0 +1,17 @@
+# Cloudflare Worker config for the quote relay.
+#
+# Only used if you deploy the relay from this repository:
+#   Workers & Pages → Create → Connect GitHub → pick this repo.
+# Nothing else here reads it, and the app itself does not need it.
+#
+# The Massive API key is NOT in this file and must not be. Set it as a secret
+# on the deployed Worker instead:
+#   Worker → Settings → Variables and Secrets → Add → Secret → MASSIVE_KEY
+
+name = "quote-relay"
+main = "quote-relay-worker.js"
+compatibility_date = "2026-08-07"
+
+# No bundler, no build step — the Worker is one plain ES module.
+[build]
+command = ""

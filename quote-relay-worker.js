@@ -7,32 +7,58 @@
    phone. This re-issues it from Cloudflare's edge, where that rule does not
    apply, and returns the answer with the header the browser needs.
 
-   Deploy (free tier, no card):
-     1. dash.cloudflare.com → Workers & Pages → Create → Start with Hello World
-     2. Replace the code with this file, Deploy
-     3. Copy the workers.dev URL and put it in the app:
-        Watchlist → source → Custom →  https://<name>.<you>.workers.dev/?url=
-        Then tap "Test This Route".
+   Deploy (free tier, no card) — either route:
 
-   Two deliberate limits, because an unrestricted relay is an open proxy that
-   anyone on the internet can point at anything:
+     From GitHub, no code editor:
+       Workers & Pages → Create → Connect GitHub → pick this repo.
+       wrangler.toml tells it what to build; later changes ship on push.
+
+     By hand:
+       Workers & Pages → Create → Start with Hello World → Deploy,
+       then Edit code, paste this file, Deploy.
+
+   Then put the URL in the app:
+     Watchlist → source → Custom →  https://<name>.<you>.workers.dev/?url=
+   and tap "Test This Route".
+
+   ── The API key ──
+   Set MASSIVE_KEY as a Worker secret and the key never touches the phone at
+   all: it is added here, at the edge, on the way out. Nothing to paste into
+   the app, nothing sitting in localStorage, nothing in a URL a relay could
+   log. In the app, turn on "my relay holds the key".
+
+     Dashboard → your Worker → Settings → Variables and Secrets
+       → Add → type: Secret, name: MASSIVE_KEY, value: <your key> → Deploy
+
+   A secret set this way is write-only — it can be replaced but never read
+   back out of the dashboard, and it is not in the repository.
+
+   Three deliberate limits, because an unrestricted relay is an open proxy
+   that anyone on the internet can point at anything — and one holding your
+   key would let them spend your quota:
 
    - ALLOWED_HOSTS — only the quote feeds can be fetched through it.
-   - ALLOWED_ORIGINS — only your copy of the app may call it. Leave it empty
-     to allow any origin (simpler; fine for a personal relay that is already
-     limited to the hosts above).
+   - ALLOWED_ORIGINS — only your copy of the app may call it.
+   - The key is only ever attached to the Massive hosts, never to any other
+     upstream, so it cannot leak sideways.
 ───────────────────────────────────────── */
 
-const ALLOWED_HOSTS = [
+const MASSIVE_HOSTS = [
   'api.massive.com',            // Massive (formerly Polygon.io)
-  'api.polygon.io',             // its legacy hostname, still served
+  'api.polygon.io'              // its legacy hostname, still served
+];
+
+const ALLOWED_HOSTS = [
+  ...MASSIVE_HOSTS,
   'cdn.cboe.com',
   'query1.finance.yahoo.com',
   'query2.finance.yahoo.com'
 ];
 
-// e.g. ['https://asre1212.github.io']. Empty = any origin.
-const ALLOWED_ORIGINS = [];
+// Only these pages may use this relay. Empty = any origin, which also means
+// anyone who finds the URL can spend your Massive quota — so if you set the
+// MASSIVE_KEY secret, keep this filled in.
+const ALLOWED_ORIGINS = ['https://asre1212.github.io'];
 
 const MAX_URL = 2000;
 
@@ -58,7 +84,7 @@ const fail = (status, msg, headers) =>
   });
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const origin = request.headers.get('Origin') || '';
     const cors   = corsHeaders(origin);
     if (!cors) return fail(403, 'origin not allowed');
@@ -76,6 +102,18 @@ export default {
     try { dest = new URL(target); } catch (e) { return fail(400, 'malformed url', cors); }
     if (dest.protocol !== 'https:')            return fail(400, 'https only', cors);
     if (!ALLOWED_HOSTS.includes(dest.hostname)) return fail(403, `host not allowed: ${dest.hostname}`, cors);
+
+    /* Attach the key here rather than expecting the caller to carry it — the
+       whole point of holding it as a secret. Only for Massive, and only when
+       the caller did not already supply one, so a key typed into the app
+       still wins and nothing is silently overridden. */
+    const wantsKey = MASSIVE_HOSTS.includes(dest.hostname);
+    if (wantsKey && env?.MASSIVE_KEY && !dest.searchParams.get('apiKey')) {
+      dest.searchParams.set('apiKey', env.MASSIVE_KEY);
+    }
+    if (wantsKey && !dest.searchParams.get('apiKey')) {
+      return fail(401, 'no API key: set the MASSIVE_KEY secret on this Worker, or enter one in the app', cors);
+    }
 
     let upstream;
     try {
