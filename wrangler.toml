@@ -8,7 +8,9 @@
 # on the deployed Worker instead:
 #   Worker → Settings → Variables and Secrets → Add → Secret → MASSIVE_KEY
 
-name = "quote-relay"
+# Must match the Worker that already exists in the dashboard, or deploying
+# from git creates a second one alongside it instead of updating it.
+name = "option"
 main = "quote-relay-worker.js"
 compatibility_date = "2026-08-07"
 

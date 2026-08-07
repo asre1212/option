@@ -18,8 +18,13 @@
        then Edit code, paste this file, Deploy.
 
    Then put the URL in the app:
-     Watchlist → source → Custom →  https://<name>.<you>.workers.dev/?url=
-   and tap "Test This Route".
+     Watchlist → source → Custom →  https://<worker>.<account>.workers.dev/?url=
+
+   Find that address under Domains and routes on the Worker's Overview page —
+   both halves are chosen by Cloudflare, not by you, so read it rather than
+   assuming it. If the workers.dev row there says Disabled, enable it first:
+   until then the hostname does not resolve at all and the browser reports the
+   server as missing rather than as refusing. Then tap "Test This Route".
 
    ── The API key ──
    Set MASSIVE_KEY as a Worker secret and the key never touches the phone at

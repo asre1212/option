@@ -182,8 +182,16 @@ by trying rather than assuming. Testing never changes the saved route, even if i
 throws.
 
 The durable answer is your own relay: **`quote-relay-worker.js`** is a Cloudflare Worker
-that runs on the free tier, deploys by pasting one file, and takes only the quote-feed
-hosts as targets so it cannot be used as an open proxy. Its URL goes in *Custom*.
+that runs on the free tier, deploys by pasting one file — or straight from this repo, via
+`wrangler.toml` — and takes only the quote-feed hosts as targets so it cannot be used as
+an open proxy. Its URL goes in *Custom*.
+
+Two things that bite when setting it up. The address is
+`https://<worker>.<account>.workers.dev`, and **both halves are assigned by Cloudflare** —
+read it off *Domains and routes* on the Worker's Overview page rather than guessing. And
+if that panel shows **workers.dev · Disabled**, enable it before anything else: until then
+the hostname does not resolve, and the browser reports the server as missing rather than
+as refusing, which looks like a wrong URL instead of a switched-off route.
 
 **Better still, don't hold the key at all.** Set `MASSIVE_KEY` as a secret on your own
 Worker (*Settings → Variables and Secrets → Secret*) and tick **my relay holds the key**
@@ -333,6 +341,7 @@ and imports only the valid ones — problem entries stay behind to be fixed. A s
 | `icon.svg` | App icon |
 | `options-tracker.html` | Redirect stub kept for old bookmarks / previously installed PWAs |
 | `quote-relay-worker.js` | Optional Cloudflare Worker that relays the quote feeds past CORS. Not part of the app; deploy it only if you want your own route. |
+| `wrangler.toml` | Config for deploying that Worker from this repo. `name` must match the Worker in your dashboard, or a second one is created beside it. |
 
 ## Deploying
 
