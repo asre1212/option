@@ -24,23 +24,20 @@ compatibility_date = "2026-08-07"
 [triggers]
 crons = ["*/5 10-21 * * 1-5"]
 
-# ── Scheduled collection (optional) ──────────────────────────────────────
-# Uncomment this block to let the Worker gather quotes on its own, so the app
+# ── Scheduled collection ─────────────────────────────────────────────────
+# Where the Worker keeps the quotes it gathers on the cron above, so the app
 # has current data the moment it opens — including the 6:30 am premarket run,
-# when the phone is asleep. Without it the Worker is still a working relay and
-# the app fetches for itself.
+# when the phone is asleep.
 #
-# It stays commented out because a KV id has to be real: wrangler resolves it
-# at deploy time, and a placeholder fails the build rather than being ignored.
-#
-#   1. Storage & Databases → KV → Create namespace
-#   2. Copy its Namespace ID
-#   3. Paste it below and uncomment all three lines
+# The id must be a real namespace: wrangler resolves it at deploy time, and a
+# placeholder fails the build rather than being quietly ignored. It is an
+# identifier rather than a credential — reading the namespace still needs
+# account access — which is why it belongs in version control while the API
+# key never does.
 #
 # Binding it in the dashboard instead does not last: a deploy from git applies
-# this file as the whole truth, so a binding that is not written here is
-# removed on the next push.
-#
-# [[kv_namespaces]]
-# binding = "QUOTES"
-# id = "your-namespace-id"
+# this file as the whole truth, so a binding not written here is removed on
+# the next push.
+[[kv_namespaces]]
+binding = "QUOTES"
+id = "8670e18bd9874637a22b930c5bd96c74"
