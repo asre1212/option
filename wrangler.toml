@@ -17,3 +17,23 @@ compatibility_date = "2026-08-07"
 # No bundler, no build step — the Worker is one plain ES module.
 [build]
 command = ""
+
+# ── Scheduled collection (optional) ──────────────────────────────────────
+# Everything below is only needed if you want the Worker to gather quotes on
+# its own, so the app has current data the moment it opens — including the
+# 6:30 am premarket run, when your phone is asleep. Without it the Worker is
+# still a working relay and the app fetches for itself.
+#
+# Fires every 5 minutes across the hours that contain the New York session in
+# both halves of the year. The Worker checks the actual Eastern time and does
+# nothing unless a slot is due, which is why there is one trigger here rather
+# than one pair per daylight-saving offset.
+[triggers]
+crons = ["*/5 10-21 * * 1-5"]
+
+# Create the namespace first: Storage & Databases → KV → Create namespace,
+# then paste its ID here. Deploying from the dashboard instead? Bind it under
+# Settings → Bindings → Add → KV namespace, with the variable name QUOTES.
+[[kv_namespaces]]
+binding = "QUOTES"
+id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"

@@ -67,6 +67,170 @@ const ALLOWED_ORIGINS = ['https://asre1212.github.io'];
 
 const MAX_URL = 2000;
 
+/* ═══════════════════════════════════════
+   SCHEDULED COLLECTION  (optional)
+
+   A page can only refresh while it is open, which is no use at 6:30 in the
+   morning. With a KV namespace bound as QUOTES and the cron triggers in
+   wrangler.toml, this Worker collects on its own schedule and the app just
+   reads the result when it opens — one request instead of two per ticker,
+   and data that is current whether or not the phone was awake.
+
+   Everything here is optional. With no QUOTES binding the Worker is still a
+   plain relay and the app falls back to fetching for itself.
+
+   What is stored is the raw filtered chain, not finished figures: strike
+   selection and ROI stay in the app, where they are already written and
+   tested, so there is one implementation of the maths rather than two.
+═══════════════════════════════════════ */
+
+// Keep in step with MARKET_SLOTS in app.js — the app displays these, this
+// runs them. New York time; the cron fires far more often than this and the
+// due check below decides what actually happens.
+const SLOTS = [
+  { key: 'pre',   h: 6,  m: 30 },
+  { key: 'open',  h: 9,  m: 31 },
+  { key: 'noon',  h: 12, m: 0  },
+  { key: 'aft',   h: 14, m: 30 },
+  { key: 'close', h: 15, m: 58 }
+];
+
+const WATCH_KEY = 'watchlist';
+const SNAP_KEY  = 'snapshot';
+const MAX_WATCH = 40;
+
+// Wall clock in New York, so the schedule follows the market rather than UTC
+// and needs no changing twice a year.
+function marketNow(now) {
+  const p = {};
+  new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York', weekday: 'short', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+  }).formatToParts(now || new Date()).forEach(x => { p[x.type] = x.value; });
+  return {
+    date: `${p.year}-${p.month}-${p.day}`,
+    minutes: (parseInt(p.hour, 10) % 24) * 60 + parseInt(p.minute, 10),
+    weekend: p.weekday === 'Sat' || p.weekday === 'Sun'
+  };
+}
+
+// Options do not trade before the opening bell, so anything collected then
+// carries yesterday's closes on the contracts even when the underlying has
+// moved. Say so rather than letting it read as live.
+const isPremarket = m => m.minutes < 9 * 60 + 30;
+
+const jsonResponse = (obj, status, headers) =>
+  new Response(JSON.stringify(obj), {
+    status: status || 200,
+    headers: { 'Content-Type': 'application/json', ...(headers || {}) }
+  });
+
+async function massiveJSON(path, env) {
+  const sep = path.includes('?') ? '&' : '?';
+  const r = await fetch(`https://api.massive.com${path}${sep}apiKey=${encodeURIComponent(env.MASSIVE_KEY)}`, {
+    headers: { 'User-Agent': 'options-tracker-relay', 'Accept': 'application/json' }
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+const dayOffset = n => {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+
+/* One ticker: the puts expiring near 45 days out, plus the previous close.
+   Returns the same shape the app's Massive provider builds, so the app can
+   run its existing leg-selection over it unchanged. */
+async function collectTicker(ticker, env) {
+  const t = encodeURIComponent(ticker);
+  let results = [];
+  for (const [lo, hi] of [[38, 52], [20, 90]]) {
+    const j = await massiveJSON(
+      `/v3/snapshot/options/${t}?contract_type=put&limit=250`
+      + `&expiration_date.gte=${dayOffset(lo)}&expiration_date.lte=${dayOffset(hi)}`, env);
+    results = Array.isArray(j?.results) ? j.results : [];
+    if (results.length) break;
+  }
+  if (!results.length) throw new Error('no put contracts');
+
+  const num = v => { const n = parseFloat(v); return isFinite(n) ? n : null; };
+  let price = null;
+  const chain = [];
+  for (const r of results) {
+    const strike = num(r?.details?.strike_price);
+    const expiry = r?.details?.expiration_date;
+    if (strike == null || strike <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(expiry || '')) continue;
+    if (price == null) price = num(r?.underlying_asset?.price);
+    chain.push({
+      expiry, strike,
+      bid:  num(r?.last_quote?.bid) ?? 0,
+      ask:  num(r?.last_quote?.ask) ?? 0,
+      last: num(r?.last_trade?.price) ?? num(r?.day?.close) ?? 0,
+      oi:   num(r?.open_interest) ?? 0
+    });
+  }
+  if (!chain.length) throw new Error('no usable contracts');
+
+  let prevClose = null;
+  try {
+    const p = await massiveJSON(`/v2/aggs/ticker/${t}/prev?adjusted=true`, env);
+    prevClose = num(p?.results?.[0]?.c);
+    if (price == null) price = prevClose;
+  } catch (e) { /* the chain is the point */ }
+  if (price == null || price <= 0) throw new Error('no underlying price');
+
+  return {
+    price, prevClose,
+    changePct: prevClose > 0 ? (price - prevClose) / prevClose * 100 : null,
+    chain, source: 'Massive · relay'
+  };
+}
+
+/* Which slots are due today and have not run. Missed ones are collapsed —
+   one collection brings everything current, so a Worker that was asleep or
+   erroring does not then replay the whole day. */
+function dueSlots(state, m) {
+  if (m.weekend) return [];
+  const runs = (state.date === m.date && state.runs) ? state.runs : [];
+  return SLOTS.filter(s => !runs.includes(s.key) && m.minutes >= s.h * 60 + s.m);
+}
+
+async function collect(env, force) {
+  if (!env?.QUOTES) return { skipped: 'no KV namespace bound' };
+  if (!env?.MASSIVE_KEY) return { skipped: 'no MASSIVE_KEY secret' };
+
+  const m     = marketNow();
+  const prev  = await env.QUOTES.get(SNAP_KEY, 'json') || {};
+  const state = { date: prev.date, runs: prev.runs };
+  const due   = force ? [{ key: 'manual' }] : dueSlots(state, m);
+  if (!due.length) return { skipped: 'nothing due' };
+
+  const tickers = (await env.QUOTES.get(WATCH_KEY, 'json')) || [];
+  if (!tickers.length) return { skipped: 'watchlist empty' };
+
+  // Sequential, to stay inside the 5-requests-a-minute free allowance. Two
+  // calls per ticker, so a symbol every 26 seconds.
+  const quotes = { ...(prev.quotes || {}) };
+  for (const tk of tickers.slice(0, MAX_WATCH)) {
+    try {
+      quotes[tk] = { ...(await collectTicker(tk, env)), asOf: new Date().toISOString(), premarket: isPremarket(m) };
+    } catch (e) {
+      const kept = quotes[tk] || {};
+      quotes[tk] = { ...kept, error: String(e.message || e).slice(0, 200), errorAt: new Date().toISOString() };
+    }
+    await new Promise(r => setTimeout(r, 26000));
+  }
+
+  const runs = (prev.date === m.date ? (prev.runs || []) : []).concat(due.map(s => s.key));
+  await env.QUOTES.put(SNAP_KEY, JSON.stringify({
+    date: m.date, runs, updated: new Date().toISOString(),
+    premarket: isPremarket(m), quotes
+  }));
+  return { collected: tickers.length, slots: due.map(s => s.key) };
+}
+
 function corsHeaders(origin) {
   const allow = !ALLOWED_ORIGINS.length ? '*'
     : (ALLOWED_ORIGINS.includes(origin) ? origin : null);
@@ -99,7 +263,39 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (request.method !== 'GET')     return fail(405, 'GET only', cors);
 
-    const target = new URL(request.url).searchParams.get('url');
+    const reqUrl = new URL(request.url);
+
+    /* ── Collected snapshot ──
+       Everything the app needs in one request, however long ago the phone
+       was last open. Absent a KV binding this says so plainly rather than
+       failing in a way that looks like a network problem. */
+    if (reqUrl.pathname === '/snapshot') {
+      if (!env?.QUOTES) return fail(501, 'no KV namespace bound — scheduled collection is not set up', cors);
+      const snap = await env.QUOTES.get(SNAP_KEY, 'json');
+      if (!snap) return jsonResponse({ updated: null, quotes: {} }, 200, cors);
+      return jsonResponse(snap, 200, cors);
+    }
+
+    /* The Worker collects on a schedule, so it has to be told what to watch.
+       A GET keeps it a simple request with no preflight; the origin lock is
+       what stops anyone else rewriting the list. */
+    if (reqUrl.pathname === '/watch') {
+      if (!env?.QUOTES) return fail(501, 'no KV namespace bound', cors);
+      const raw = (reqUrl.searchParams.get('set') || '').toUpperCase();
+      const list = raw.split(',').map(s => s.trim())
+        .filter(s => /^[A-Z.]{1,6}$/.test(s)).slice(0, MAX_WATCH);
+      const seen = [...new Set(list)];
+      await env.QUOTES.put(WATCH_KEY, JSON.stringify(seen));
+      return jsonResponse({ watching: seen }, 200, cors);
+    }
+
+    // Collect on demand — the app's Refresh button, and a way to test the
+    // whole path without waiting for a cron.
+    if (reqUrl.pathname === '/collect') {
+      return jsonResponse(await collect(env, true), 200, cors);
+    }
+
+    const target = reqUrl.searchParams.get('url');
     if (!target)                 return fail(400, 'missing ?url=', cors);
     if (target.length > MAX_URL) return fail(414, 'url too long', cors);
 
@@ -143,5 +339,14 @@ export default {
         'Content-Type': upstream.headers.get('Content-Type') || 'application/json'
       }
     });
+  },
+
+  /* Cron. wrangler.toml fires this every few minutes across the session; the
+     due check decides whether anything actually happens, which keeps the
+     schedule on New York time without needing two sets of UTC triggers to
+     cover daylight saving. A collection takes minutes, so it is handed to
+     waitUntil rather than awaited. */
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(collect(env, false));
   }
 };
