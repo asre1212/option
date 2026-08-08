@@ -19,8 +19,8 @@ in your browser's localStorage; nothing is sent to a server.
   alone beats your realized average.
 - **Watchlist** — tickers and ETFs you are thinking about, each showing price, the
   day's move, and what a put is paying 5% and 10% out of the money at ~45 days,
-  with the annualized ROI. Refreshed through the session, 9:31 am to just before
-  the close, ET. See below.
+  with the annualized ROI. Refreshed five times a day, premarket to the close —
+  by the relay itself if you set one up, so the app need not be open. See below.
 - **Analysis** — realized P&L, capital-weighted annualized ROI, win rate, average
   holding period, month-by-month performance with every closed position and what
   it earned, and breakdowns by term written, ticker and type.
@@ -216,12 +216,46 @@ look at, not what you will get.
 
 ### Refresh schedule
 
-Four times through the session, on New York time: **9:31 am** — a minute after the
-open, so the first prints have happened — then **12:00 pm**, **2:30 pm** and **3:58 pm**.
-The last sits closer to the bell than to the one before it on purpose: an evening
-glance at the watchlist should show closing prices, not mid-afternoon ones. Weekends
-are skipped; market holidays are not modelled, so a holiday simply carries the
+Five times a day, on New York time: **6:30 am** (premarket), then **9:31 am** — a minute
+after the open, so the first prints have happened — **12:00 pm**, **2:30 pm** and
+**3:58 pm**. The last sits closer to the bell than to the one before it on purpose: an
+evening glance at the watchlist should show closing prices, not mid-afternoon ones.
+Weekends are skipped; market holidays are not modelled, so a holiday simply carries the
 previous close forward.
+
+**Premarket is a genuine half-measure, and the app says so.** Options do not trade before
+9:30 — OPRA is shut — so a 6:30 collection pairs a live underlying price with *yesterday's
+closing quotes* on the contracts. The strikes are picked against this morning's price but
+the premiums, and every ROI built from them, are last night's. Cards from that run carry a
+warning saying exactly that, and a premarket quote is barred from driving the close-early
+and switch advice, where a stale premium would price a real decision wrongly.
+
+### Collecting without the app open
+
+A page with no server can only refresh while it is open, which is no use at 6:30 in the
+morning. Given a KV namespace and the cron triggers in `wrangler.toml`, the relay collects
+on this schedule by itself and the app reads the result when it opens — **one request
+instead of two per ticker**, no rate-limit stagger to sit through, and data that is current
+whether or not the phone was awake.
+
+- `/watch?set=…` — the app pushes its watchlist whenever it changes, so the relay knows
+  what to collect. A GET, so it stays a simple request; the origin lock is what keeps
+  anyone else from rewriting it.
+- `/snapshot` — everything, in one response.
+- `/collect` — collect now, for testing the path without waiting for a cron.
+
+The relay stores the **raw filtered chain**, not finished figures. Strike selection and
+ROI stay in the app, through the same code that handles a direct fetch, so there is one
+implementation of the maths rather than two that can drift apart.
+
+The cron fires every five minutes across the hours covering the session, and the Worker
+checks the real Eastern time to decide whether a slot is due — one trigger rather than a
+pair for each daylight-saving offset. Once the relay has answered for anything on the list
+its answer stands, including its errors: re-asking the feeds directly would only bury a
+useful message like `HTTP 429` under the CORS failures that led to using a relay at all.
+
+All of it is optional. With no KV namespace bound the Worker is still a plain relay, and
+the app goes back to fetching for itself.
 
 A page with no server can only act while it is open, so rather than relying on a
 timer alone, every entry point — launch, returning to the app, coming back online,

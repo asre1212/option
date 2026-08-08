@@ -2431,6 +2431,70 @@ async function refreshOne(ticker) {
   return ok;
 }
 
+/* ── The relay's own collection ──
+   When the relay is collecting on a schedule, everything the app needs is
+   already sitting there: one request, however long the phone was closed, and
+   no rate-limit stagger to sit through. What comes back is the raw filtered
+   chain, so strike selection and ROI run here, through the same code that
+   handles a direct fetch — one implementation of the maths, not two. */
+const relayBase = () => {
+  const p = quoteProxy();
+  if (!p || proxyIsPublic()) return null;
+  try { return new URL(p).origin; } catch (e) { return null; }
+};
+
+// The relay collects on a schedule, so it has to know what to collect.
+function syncWatchlistToRelay() {
+  const base = relayBase();
+  if (!base || navigator.onLine === false) return;
+  fetch(`${base}/watch?set=${encodeURIComponent(loadWatchlist().join(','))}`,
+        { cache: 'no-store', mode: 'cors' }).catch(() => {});
+}
+
+/* Returns both how many quotes landed and how many watched tickers the
+   snapshot had anything to say about. The second is what decides whether the
+   relay has spoken: if it reports a rate limit or a bad symbol, that is the
+   answer, and re-asking the feeds directly would only bury a useful message
+   under the CORS failures that sent us to a relay in the first place. */
+function applySnapshot(snap) {
+  const watching = loadWatchlist();
+  const m = loadMarket();
+  m.quotes = m.quotes || {};
+  let n = 0, seen = 0;
+  Object.entries(snap?.quotes || {}).forEach(([tk, raw]) => {
+    if (!watching.includes(tk) || !raw) return;
+    if (!raw.chain?.length) {
+      if (raw.error) {
+        m.quotes[tk] = { ...(m.quotes[tk] || { ticker: tk }), error: raw.error, errorAt: raw.errorAt };
+        seen++;
+      }
+      return;
+    }
+    const legs = buildLegs(raw.price, raw.chain);
+    m.quotes[tk] = {
+      ticker: tk, price: raw.price, prevClose: raw.prevClose ?? null,
+      changePct: raw.changePct ?? null,
+      source: raw.source || 'relay', asOf: raw.asOf || snap.updated || new Date().toISOString(),
+      premarket: !!(raw.premarket ?? snap.premarket),
+      expiry: legs?.expiry || null, dte: legs?.dte || null,
+      offTarget: !!legs?.offTarget, legs: legs?.legs || null,
+      error: legs ? null : 'no usable contracts in the snapshot'
+    };
+    n++; seen++;
+  });
+  if (seen) { if (n) m.lastRun = snap.updated || new Date().toISOString(); saveMarket(m); }
+  return { fresh: n, seen };
+}
+
+async function pullSnapshot() {
+  const base = relayBase();
+  if (!base) return { fresh: 0, seen: 0 };
+  try {
+    // Straight to the relay, not through it — this is its own endpoint
+    return applySnapshot(await fetchJSON(`${base}/snapshot`, false));
+  } catch (e) { return { fresh: 0, seen: 0 }; }
+}
+
 // Returns how many tickers came back with a fresh quote.
 async function refreshWatchlist(manual, slotLabel) {
   const list = loadWatchlist();
@@ -2441,6 +2505,17 @@ async function refreshWatchlist(manual, slotLabel) {
   }
   _wlRunning = true;
   renderWatchlist();
+
+  // A collecting relay makes the whole per-ticker walk unnecessary. Once it
+  // has answered for anything on the list, its answer stands.
+  const snap = await pullSnapshot();
+  if (snap.seen) {
+    _wlRunning = false;
+    if (slotLabel) { const mm = loadMarket(); mm.lastSlot = slotLabel; saveMarket(mm); }
+    renderWatchlist(); renderActive();
+    return snap.fresh;
+  }
+
   const gap = staggerFor(manual);
   let fresh = 0;
   try {
@@ -2477,11 +2552,18 @@ async function refreshWatchlist(manual, slotLabel) {
    deliberately closer to the bell than to the one before it — an evening
    glance at the watchlist should show closing prices, not mid-afternoon ones. */
 const MARKET_SLOTS = [
+  { key: 'pre',   h: 6,  m: 30, label: '6:30 am ET' },
   { key: 'open',  h: 9,  m: 31, label: '9:31 am ET' },
   { key: 'noon',  h: 12, m: 0,  label: '12:00 pm ET' },
   { key: 'aft',   h: 14, m: 30, label: '2:30 pm ET' },
   { key: 'close', h: 15, m: 58, label: '3:58 pm ET' }
 ];
+
+// Options do not trade before the opening bell. A quote taken at 6:30 has a
+// live underlying and yesterday's closes on the contracts, so the premiums
+// and the ROI built from them are last night's, against this morning's price.
+const RTH_OPEN = 9 * 60 + 30;
+const inPremarket = () => { const m = marketNow(); return !m.weekend && m.minutes < RTH_OPEN; };
 const SLOT_SPREAD_MIN = 4;   // up to this many minutes late, on purpose
 
 // Wall clock in New York, whatever the device is set to
@@ -2623,6 +2705,7 @@ function addWatchItem() {
   if (list.length >= MAX_WATCH) { alert(`The watchlist holds ${MAX_WATCH} tickers. Remove one first.`); return; }
   list.push(tk);
   saveWatchlist(list);
+  syncWatchlistToRelay();
   el.value = '';
   closeOverlay('m-wladd');
   renderWatchlist();
@@ -2639,6 +2722,7 @@ function removeWatchItem(tk) {
   const quote  = marketQuotes()[tk];
 
   saveWatchlist(before.filter(x => x !== tk));
+  syncWatchlistToRelay();
   saveWatchNote(tk, '');
   const m = loadMarket();
   if (m.quotes) { delete m.quotes[tk]; saveMarket(m); }
@@ -2648,6 +2732,7 @@ function removeWatchItem(tk) {
     const list = loadWatchlist();
     if (!list.includes(tk)) list.splice(Math.min(idx, list.length), 0, tk);
     saveWatchlist(list);
+    syncWatchlistToRelay();
     if (note) saveWatchNote(tk, note);
     if (quote) { const mm = loadMarket(); mm.quotes = mm.quotes || {}; mm.quotes[tk] = quote; saveMarket(mm); }
     renderWatchlist();
@@ -2748,6 +2833,7 @@ function saveQuoteSource() {
   if (prefix) localStorage.setItem(PROXY_KEY, prefix); else localStorage.removeItem(PROXY_KEY);
   closeOverlay('m-wlsource');
   renderWatchlist();
+  syncWatchlistToRelay();
   if (prefix) refreshWatchlist(true);
 }
 
@@ -2911,6 +2997,9 @@ function bestCandidate() {
   loadWatchlist().forEach(tk => {
     const q = quotes[tk];
     if (!q || !q.legs || quoteAgeDays(q) > STALE_DAYS) return;
+    // Premarket premiums are yesterday's closes. Fine to look at, not fine to
+    // price a decision to close a live position against.
+    if (q.premarket) return;
     q.legs.forEach(l => {
       if (l.missing || !(l.roi > 0)) return;
       if (!best || l.roi > best.roi) best = { ...l, ticker: tk, price: q.price, expiry: q.expiry || l.expiry };
@@ -3026,6 +3115,14 @@ function watchCardHTML(tk, q, note, target) {
     body = `<div class="wl-loading">${pending ? 'Fetching…' : 'No quote yet — tap Refresh.'}</div>`;
   }
 
+  // A premarket snapshot pairs a live underlying with last night's contract
+  // quotes, so the premium and the ROI built from it are yesterday's.
+  const preNote = q?.premarket && q?.legs?.length
+    ? `<div class="wl-note" style="background:rgba(160,96,16,.06);color:var(--amber)">
+         Premarket — the price is this morning's, the premiums are yesterday's closes.
+         Options do not trade until 9:30.
+       </div>` : '';
+
   const asOf = q?.asOf ? new Date(q.asOf) : null;
   const foot = [
     q?.expiry ? `${esc(q.expiry)} · ${fmtInt(q.dte)}d${q.offTarget ? ' (no ~45d expiry listed)' : ''}` : null,
@@ -3042,6 +3139,7 @@ function watchCardHTML(tk, q, note, target) {
       ${priceHTML}
     </div>
     ${body}
+    ${preNote}
     ${note ? `<div class="wl-note">${esc(note)}</div>` : ''}
     <div class="wl-foot">
       <div>${foot || '—'}</div>

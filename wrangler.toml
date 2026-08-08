@@ -1,12 +1,14 @@
 # Cloudflare Worker config for the quote relay.
 #
-# Only used if you deploy the relay from this repository:
-#   Workers & Pages → Create → Connect GitHub → pick this repo.
-# Nothing else here reads it, and the app itself does not need it.
+# Used when the relay is deployed from this repository — Workers & Pages →
+# your Worker → Settings → Build → connect this repo. Every push then
+# redeploys it. Nothing else here reads this file, and the app does not need
+# it at all.
 #
 # The Massive API key is NOT in this file and must not be. Set it as a secret
-# on the deployed Worker instead:
+# on the deployed Worker instead, where it cannot be read back out:
 #   Worker → Settings → Variables and Secrets → Add → Secret → MASSIVE_KEY
+# Secrets are stored separately from this config and survive every deploy.
 
 # Must match the Worker that already exists in the dashboard, or deploying
 # from git creates a second one alongside it instead of updating it.
@@ -14,6 +16,31 @@ name = "option"
 main = "quote-relay-worker.js"
 compatibility_date = "2026-08-07"
 
-# No bundler, no build step — the Worker is one plain ES module.
-[build]
-command = ""
+# Fires every 5 minutes across the hours that contain the New York session in
+# both halves of the year. The Worker checks the actual Eastern time and does
+# nothing unless a slot is due, which is why there is one trigger here rather
+# than one pair per daylight-saving offset. Harmless without KV below: the
+# collection simply reports that it has nowhere to store anything.
+[triggers]
+crons = ["*/5 10-21 * * 1-5"]
+
+# ── Scheduled collection (optional) ──────────────────────────────────────
+# Uncomment this block to let the Worker gather quotes on its own, so the app
+# has current data the moment it opens — including the 6:30 am premarket run,
+# when the phone is asleep. Without it the Worker is still a working relay and
+# the app fetches for itself.
+#
+# It stays commented out because a KV id has to be real: wrangler resolves it
+# at deploy time, and a placeholder fails the build rather than being ignored.
+#
+#   1. Storage & Databases → KV → Create namespace
+#   2. Copy its Namespace ID
+#   3. Paste it below and uncomment all three lines
+#
+# Binding it in the dashboard instead does not last: a deploy from git applies
+# this file as the whole truth, so a binding that is not written here is
+# removed on the next push.
+#
+# [[kv_namespaces]]
+# binding = "QUOTES"
+# id = "your-namespace-id"
