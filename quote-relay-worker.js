@@ -140,10 +140,66 @@ const dayOffset = n => {
   return d.toISOString().slice(0, 10);
 };
 
+/* AAPL260220P00150000 → Feb 20 2026 put, $150. The last 15 characters are
+   fixed width, so read from the end; roots contain digits often enough that
+   reading from the front is not safe. */
+function parseOcc(sym) {
+  const m = /^(.+?)(\d{6})([CP])(\d{8})$/.exec(String(sym || '').replace(/\s+/g, '').toUpperCase());
+  if (!m) return null;
+  return {
+    expiry: `20${m[2].slice(0,2)}-${m[2].slice(2,4)}-${m[2].slice(4,6)}`,
+    type:   m[3] === 'P' ? 'put' : 'call',
+    strike: parseInt(m[4], 10) / 1000
+  };
+}
+
+const CBOE_INDEX  = ['SPX','VIX','NDX','RUT','DJX','XSP','OEX','XEO'];
+const cboeSymbol  = t => (CBOE_INDEX.includes(t) ? '_' + t : t.replace(/\./g, ''));
+
+/* Cboe's delayed-quote CDN: underlying and whole chain in one request, no
+   key and no entitlement to be short of. It refuses browsers and shared
+   proxies, which is the entire reason this Worker exists — from here it
+   answers normally. */
+async function collectCboe(ticker) {
+  const r = await fetch(
+    `https://cdn.cboe.com/api/global/delayed_quotes/options/${encodeURIComponent(cboeSymbol(ticker))}.json`,
+    { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; options-tracker-relay)', 'Accept': 'application/json' } });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const d = (await r.json())?.data;
+  if (!d || !Array.isArray(d.options)) throw new Error('unexpected response');
+
+  const num = v => { const n = parseFloat(v); return isFinite(n) ? n : null; };
+  const price = num(d.current_price) ?? num(d.last_trade_price) ?? num(d.close);
+  if (price == null || price <= 0) throw new Error('no price');
+
+  // The whole chain is far more than is needed; keep the window the app picks from
+  const lo = dayOffset(20), hi = dayOffset(90);
+  const chain = [];
+  for (const o of d.options) {
+    const p = parseOcc(o.option);
+    if (!p || p.type !== 'put' || p.expiry < lo || p.expiry > hi) continue;
+    chain.push({
+      expiry: p.expiry, strike: p.strike,
+      bid:  num(o.bid) ?? 0,
+      ask:  num(o.ask) ?? 0,
+      last: num(o.last_trade_price) ?? 0,
+      oi:   num(o.open_interest) ?? 0
+    });
+  }
+  if (!chain.length) throw new Error('no puts in range');
+
+  return {
+    price,
+    prevClose: num(d.prev_day_close) ?? num(d.close),
+    changePct: num(d.price_change_percent),
+    chain, source: 'Cboe · relay'
+  };
+}
+
 /* One ticker: the puts expiring near 45 days out, plus the previous close.
    Returns the same shape the app's Massive provider builds, so the app can
    run its existing leg-selection over it unchanged. */
-async function collectTicker(ticker, env) {
+async function collectMassive(ticker, env) {
   const t = encodeURIComponent(ticker);
   let results = [];
   for (const [lo, hi] of [[38, 52], [20, 90]]) {
@@ -188,6 +244,21 @@ async function collectTicker(ticker, env) {
   };
 }
 
+/* Massive first when there is a key, because it is the licensed source and
+   the one anybody is actually entitled to read. It answers 403 when the plan
+   does not cover option chains — the free tier does not — so Cboe is not a
+   last resort here, it is what usually does the work. */
+async function collectTicker(ticker, env) {
+  const errs = [];
+  if (env?.MASSIVE_KEY) {
+    try { return await collectMassive(ticker, env); }
+    catch (e) { errs.push(`Massive: ${e.message || e}`); }
+  }
+  try { return await collectCboe(ticker); }
+  catch (e) { errs.push(`Cboe: ${e.message || e}`); }
+  throw new Error(errs.join(' · '));
+}
+
 /* Which slots are due today and have not run. Missed ones are collapsed —
    one collection brings everything current, so a Worker that was asleep or
    erroring does not then replay the whole day. */
@@ -199,7 +270,6 @@ function dueSlots(state, m) {
 
 async function collect(env, force) {
   if (!env?.QUOTES) return { skipped: 'no KV namespace bound' };
-  if (!env?.MASSIVE_KEY) return { skipped: 'no MASSIVE_KEY secret' };
 
   const m     = marketNow();
   const prev  = await env.QUOTES.get(SNAP_KEY, 'json') || {};

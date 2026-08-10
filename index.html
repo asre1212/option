@@ -1745,8 +1745,10 @@
         data provider that permits it, or a relay that re-issues the request from a server.
       </div>
 
+      <div id="src-blocked"></div>
+
       <div class="fg">
-        <label class="fl">Massive API key — the recommended route</label>
+        <label class="fl">Massive API key — optional</label>
         <input class="fi" id="src-key" placeholder="paste your key" type="text"
                autocapitalize="off" autocorrect="off" spellcheck="false">
       </div>
@@ -1757,11 +1759,11 @@
           Needs the Custom route — a public relay is never trusted with it.</div>
       </button>
       <div class="info-box" style="margin-top:-4px">
-        <b>massive.com</b> (formerly Polygon.io) is a real options data product rather than a
-        public endpoint read sideways. The <b>Options Basic</b> plan is free — no card — and
-        gives 15-minute delayed chains at 5 requests a minute, which is ample for two updates
-        a day. Its key travels as a query parameter, so the request stays simple and stands
-        the best chance of working with no relay at all. When a key is set it is tried first.
+        <b>massive.com</b> (formerly Polygon.io) is a licensed options data product. Its free
+        <b>Options Basic</b> plan does <b>not</b> include option chains — that endpoint answers
+        403 without a paid tier — so a key is only worth setting if you have one. Cboe, reached
+        through your own relay, carries the same chains for nothing. When a key is set it is
+        tried first and Cboe backs it up.
       </div>
 
       <div class="fl" style="margin-bottom:7px">Route</div>
