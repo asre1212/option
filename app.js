@@ -2863,6 +2863,18 @@ function saveQuoteSource() {
   if (prefix) refreshWatchlist(true);
 }
 
+/* A status code is not an explanation. These are the failures that are
+   expected rather than wrong — a feed the free plan does not cover, one that
+   wants a browser session — and reading "403" next to a green result is
+   alarming in a way the actual situation is not. */
+function explainFailure(name, msg) {
+  if (name === 'Massive' && /\b403\b/.test(msg)) return 'chains need a paid plan';
+  if (/^Yahoo/.test(name)  && /\b401\b/.test(msg)) return 'wants a browser session';
+  if (/\b429\b/.test(msg))                        return 'rate limited, try in a minute';
+  if (/load failed|failed to fetch/i.test(msg))   return 'blocked before it left the device';
+  return '';
+}
+
 /* Ask every provider directly, with the route being proposed, and report
    what each one actually said. This is the only way to find out — the
    answer depends on the device and the network, not on the code. */
@@ -2890,7 +2902,8 @@ async function testQuoteSource() {
           msg: `${fmtMoney(r.price)}${legs ? ` · chain ${fmtInt(legs.dte)}d` : ' · price only'}` });
         if (!winner) winner = p.name;
       } catch (e) {
-        rows.push({ name: p.name, ok: false, msg: String(e.message || e).slice(0, 120) });
+        const msg = String(e.message || e).slice(0, 120);
+        rows.push({ name: p.name, ok: false, msg, hint: explainFailure(p.name, msg) });
       }
     }
   } finally {
@@ -2904,7 +2917,8 @@ async function testQuoteSource() {
     </div>
     ${rows.map(r => `<div class="src-row">
       <div class="src-row-name">${esc(r.name)}</div>
-      <div class="src-row-msg${r.ok ? ' ok' : ''}">${esc(r.msg)}</div>
+      <div class="src-row-msg${r.ok ? ' ok' : ''}">${esc(r.msg)}
+        ${r.hint ? `<div class="wl-leg-sub">${esc(r.hint)}</div>` : ''}</div>
     </div>`).join('')}
   </div>${winner ? '' : `<div class="risk-note" style="margin-top:10px">
     Every feed refused on this route. Try another one above — or enter prices by hand,
