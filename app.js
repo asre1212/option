@@ -2127,7 +2127,16 @@ const massiveKey   = () => (localStorage.getItem(MASSIVE_KEY) || '').trim();
 // The better arrangement: the key lives as a secret on your own relay and is
 // attached at the edge, so it is never on the phone and never in a URL.
 const relayHoldsKey  = () => localStorage.getItem(RELAY_KEY) === '1';
-const massiveEnabled = () => !!massiveKey() || relayHoldsKey();
+
+/* Massive answers 403 when the plan does not cover what was asked for, and
+   the free Options Basic tier does not cover option chains. That is a
+   standing condition rather than a passing error, so once seen it is
+   remembered and Massive drops out of the order — otherwise every refresh,
+   for ever, spends its first request finding out the same thing again.
+   Changing the key or the relay setting clears it and it tries afresh. */
+const BLOCKED_KEY   = 'opts_massive_blocked';
+const massiveBlocked = () => localStorage.getItem(BLOCKED_KEY) || '';
+const massiveEnabled = () => (!!massiveKey() || relayHoldsKey()) && !massiveBlocked();
 
 // A relay sees the whole URL, and for Massive the key is in the URL. Somebody
 // else's relay therefore must never carry it — a leaked key is spendable by
@@ -2146,6 +2155,14 @@ async function providerMassive(ticker, viaProxy) {
   if (!key && !viaProxy) throw new Error('relay holds the key — needs the relay route');
   const auth = key ? `&apiKey=${encodeURIComponent(key)}` : '';
   const t = encodeURIComponent(ticker);
+  // 403 is "your plan does not include this", not "try again"
+  const guard = e => {
+    if (/HTTP 403/.test(String(e.message || e))) {
+      localStorage.setItem(BLOCKED_KEY,
+        'Massive returned 403 — the free Options Basic plan does not include option chains.');
+    }
+    throw e;
+  };
 
   // Ask only for the expirations that could win, widening once if the
   // window is empty (a thin chain, or a holiday-shifted cycle).
@@ -2155,7 +2172,7 @@ async function providerMassive(ticker, viaProxy) {
       `https://api.massive.com/v3/snapshot/options/${t}`
       + `?contract_type=put&limit=250`
       + `&expiration_date.gte=${dateOffset(lo)}&expiration_date.lte=${dateOffset(hi)}`
-      + auth, viaProxy);
+      + auth, viaProxy).catch(guard);
     results = Array.isArray(j?.results) ? j.results : [];
     if (results.length) break;
   }
@@ -2794,6 +2811,7 @@ function applyPendingKey() {
   const k = (document.getElementById('src-key').value || '').trim();
   if (k) localStorage.setItem(MASSIVE_KEY, k); else localStorage.removeItem(MASSIVE_KEY);
   if (_srcRelayKey) localStorage.setItem(RELAY_KEY, '1'); else localStorage.removeItem(RELAY_KEY);
+  localStorage.removeItem(BLOCKED_KEY);   // try again with whatever was just set
   return k;
 }
 
@@ -2805,6 +2823,14 @@ function renderSourceOptions() {
     </button>`).join('');
   document.getElementById('src-custom-wrap').style.display = _srcPick === 'custom' ? 'block' : 'none';
   document.getElementById('src-relaykey').classList.toggle('selected', _srcRelayKey);
+
+  // Say why Massive stopped being tried, rather than letting it look broken
+  const blocked = massiveBlocked();
+  const note = document.getElementById('src-blocked');
+  note.innerHTML = blocked
+    ? `<div class="risk-note" style="margin:0 0 11px">${esc(blocked)}
+         Cboe is being used instead — it needs no key and carries the same chains.
+         Saving here tries Massive once more.</div>` : '';
 }
 
 function pickQuoteSource(id) {

@@ -146,22 +146,25 @@ alongside the watchlist itself; on a merge import, a note already on the device 
 
 ### Where the quotes come from
 
-**Massive** (formerly Polygon.io) is the intended source — the only one here that is a
-data product rather than a public endpoint read sideways. Its **Options Basic** plan is
-free, needs no card, and gives 15-minute delayed chains at 5 requests a minute, which
-is ample for two updates a day. Paste the key into *Watchlist → source*. It matters
-structurally as well as legally: the key travels as a query parameter, so the request
-stays a simple GET with no preflight — the shape most likely to survive the browser's
-cross-origin rules with no relay at all.
+**Cboe's delayed-quote CDN, through your own relay, is what actually works** — one
+request returns the underlying and its whole chain, with no key, no sign-up and no
+entitlement to fall short of. It refuses browsers and shared public proxies, which is
+the entire reason the relay exists; from a Worker it answers normally.
 
-Two calls per ticker: the chain snapshot, filtered server-side to expirations near 45
-days, and the previous close, which is what turns a price into the day's move. With a
-key set the refresh slows to one symbol every 26 seconds to stay inside the free
-allowance; losing the previous-close call costs only the percentage change.
+**Massive** (formerly Polygon.io) is a licensed data product and is tried first when a
+key is set, but its free **Options Basic** plan does **not** include option chains —
+that endpoint answers `403 not entitled` without a paid tier. A key is only worth
+setting if you have a paid one. Because 403 is a standing condition rather than a
+passing error, the app remembers it and drops Massive from the order instead of
+spending the first request of every refresh rediscovering it; changing the key or the
+relay setting clears that and tries again.
 
-Without a key it falls back to scraping public endpoints — Cboe's delayed-quote CDN,
-then Yahoo Finance, then Yahoo's chart endpoint for a price alone. These usually refuse
-a browser outright (see below).
+Massive takes two calls per ticker — the chain snapshot, filtered server-side to
+expirations near 45 days, and the previous close that turns a price into the day's move
+— so with a key in play the refresh slows to one symbol every 26 seconds to stay inside
+the 5-a-minute allowance. Cboe needs one call and no such pacing. Yahoo sits behind both
+as a last resort, its chain endpoint now wanting a session and its chart endpoint giving
+a price alone.
 
 The last good answer for each ticker is kept in `localStorage`, so the tab is never
 blank, works offline, and shows the time each quote was taken. A failed refresh keeps
