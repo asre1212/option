@@ -811,6 +811,28 @@
     .pc-basis-note b{color:var(--blue)}
     .pc-actions{display:flex;gap:8px;padding:12px 13px;border-top:1px solid var(--border);background:rgba(0,0,0,.015)}
 
+    /* ── THE UNDERLYING (portfolio cards) ── */
+    .tc-stock{
+      display:grid;grid-template-columns:repeat(3,1fr);gap:8px;
+      padding:9px 13px 10px;border-top:1px solid var(--border);
+      background:rgba(26,95,175,.035);
+    }
+    .tcs-val{font-size:13px;font-weight:600;margin-top:2px;letter-spacing:-.01em}
+    .tcs-val.green{color:var(--green)}
+    .tcs-val.red{color:var(--red)}
+    .tcs-val.muted{color:var(--text3);font-weight:500}
+    .tcs-sub{font-size:8px;color:var(--text3);margin-top:2px;line-height:1.45}
+    .tcs-note{
+      grid-column:1/-1;font-size:9px;color:var(--text2);line-height:1.55;
+      border-top:1px solid rgba(0,0,0,.06);padding-top:7px;margin-top:1px;
+    }
+    .tcs-note b{color:var(--text)}
+    .tcs-x{
+      background:none;border:none;padding:0;margin-left:4px;
+      color:var(--blue);font-family:inherit;font-size:8px;
+      cursor:pointer;text-decoration:underline;
+    }
+
     /* ── DECISION SUPPORT ── */
     .tc-hint{
       font-size:9px;line-height:1.6;padding:7px 9px;margin:0 13px 10px;
@@ -1039,7 +1061,7 @@
             <div class="page-title">Watchlist</div>
             <div class="page-sub">put candidates · 5% &amp; 10% OTM at ~45 days</div>
           </div>
-          <button class="refresh-btn" id="wl-refresh-btn" onclick="refreshWatchlist(true)">
+          <button class="refresh-btn" id="wl-refresh-btn" onclick="refreshQuotes(true)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             Refresh
           </button>

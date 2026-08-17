@@ -9,11 +9,15 @@ in your browser's localStorage; nothing is sent to a server.
 - **Portfolio** — active positions with strike, premium, contracts, live days-to-expiry
   (highlighted red when ≤ 5 days), income, and annualized ROI. The headline realized
   P&L figure is **year to date**, with the all-time total on the line beneath it.
-  Each card carries the buy-back price below which closing now beats holding.
+  Each card carries the stock behind the contract: what it was trading at when the
+  contract was written, where it is now, and the move since — as a percentage, per share
+  and across the shares the contract covers. Same for a share lot, measured from its cost
+  basis. See below.
 - **The wheel** — assignment creates a share lot; covered calls written against it
   lower its basis; called away or sold closes the cycle. See below.
-- **Decision support** — close-early breakeven per position, roll-vs-close verdict,
-  capital efficiency ranking, and concentration/assignment risk.
+- **Decision support** — close-early breakeven and the roll-vs-switch price on the
+  Watchlist tab, roll-vs-close verdict on the roll sheet, capital efficiency ranking,
+  and concentration/assignment risk in Analysis. None of it on the position cards.
 - **Roll tracking** — roll a position to a new strike/expiration; premiums accumulate,
   the full roll history stays on the card, and the roll sheet says whether the new leg
   alone beats your realized average.
@@ -23,7 +27,8 @@ in your browser's localStorage; nothing is sent to a server.
   by the relay itself if you set one up, so the app need not be open. See below.
 - **Analysis** — realized P&L, capital-weighted annualized ROI, win rate, average
   holding period, month-by-month performance with every closed position and what
-  it earned, and breakdowns by term written, ticker and type.
+  it earned, breakdowns by term written, ticker and type, and how far from the stock
+  the contracts were written — with what each distance actually returned.
 - **ROI Calculator** — single-leg calculator plus a VS mode to compare two candidate
   trades side by side.
 - **Scan** — OCR brokerage screenshots (Tesseract.js, in-browser) into pre-filled
@@ -93,8 +98,11 @@ buy-back price = total premium × (days remaining / total span)
 ```
 
 Below that price, closing now annualizes better than holding — the general form of
-the "take profit at 50%" rule, computed from your actual dates. Every open position
-shows its own threshold.
+the "take profit at 50%" rule, computed from your actual dates.
+
+**It is not on the position cards.** Advice on every position on every look is noise,
+so the threshold is shown where it is actually being asked for: the Watchlist tab,
+next to the candidate that would replace the capital.
 
 That version assumes the freed capital does nothing. When the watchlist holds a
 candidate paying more than a position is making, the price worth paying to get out
@@ -105,9 +113,72 @@ buy-back price = premium × (remaining / span)  +  strike × altROI × (remainin
 ```
 
 Capital per share is the strike, so both terms are per share and directly comparable
-to a quoted option price. With `altROI = 0` it collapses back to the line above. Open
-position cards show the second figure whenever there is a better candidate on the
-watchlist, and the Watchlist tab ranks which positions are worth closing to fund it.
+to a quoted option price. With `altROI = 0` it collapses back to the line above. The
+Watchlist tab's **Close to fund it** table carries both figures side by side and ranks
+which positions are worth closing to fund the best candidate on the list.
+
+## The stock behind each contract
+
+A strike on its own says nothing. **$200** is a careful trade on a $240 stock and a
+reckless one on a $205 stock, and the difference is the only thing that decides whether a
+put gets assigned. So every executed trade carries the stock as well as the contract:
+
+- **At execution** — what the stock was trading at the day the contract was written.
+- **Stock now** — the current price, with the time it was taken and which feed gave it.
+- **Since opened** — the move between the two, as a percentage and in money: per share,
+  and across the shares the contract covers, because the same percentage is very
+  different money on one contract than on five.
+
+Underneath, the line that matters: how far the strike sits from the stock **today**
+against how far it sat **the day it was written**. A put drifting toward its strike is
+the whole reason to look. A share lot gets the same three figures measured from its cost
+basis, plus where the stock stands against the net basis the cycle breaks even at.
+
+None of this is P&L. The premium is the P&L on an option; this is where the stock has
+gone, which is a different question and the one that decides whether to hold, roll or
+close.
+
+### Where the price at execution comes from
+
+It is stamped onto the trade and never recalculated — a fill is a fact about the trade,
+not something to re-derive — so it travels in a JSON backup and appears in the Excel
+export. Three ways in, and each card says which one it used:
+
+- **Price when logged** — a trade entered the day it was opened takes the quote already
+  on hand. A quote from an earlier day is refused rather than stamped, because last
+  week's price is not this week's execution.
+- **Close that day** — anything logged after the fact (a batch of historic trades, an
+  OCR'd screenshot, a trade entered days late) is filled in from a daily history feed.
+- **Entered by hand** — `edit` on the card, for a delisted symbol, a fill nowhere near
+  the day's close, or a browser the history feed refuses. Clearing it lets the app try
+  again.
+
+The backfill asks **once per ticker and date, ever**: trades opened together on the same
+name share one answer, and a trade that has a price is never asked about again. It runs a
+few at a time on launch and after each refresh rather than all at once, and a failure is
+remembered for a day so a delisted symbol or a blocked feed does not turn into a burst of
+requests on every load. The Analysis tab says how many trades are still missing a price
+and offers **fetch now**, which ignores that memory.
+
+History comes from Massive's daily aggregates when a key is in play and Yahoo's chart
+endpoint otherwise — Cboe's delayed-quote feed has no history to offer, so it sits this
+one out. Both take the same route as a quote: direct first, the relay only once every
+provider has failed on its own. A trade opened on a weekend or a holiday has no bar of
+its own, so the **last session at or before** the open date is used — that is the price
+that was actually on the screen.
+
+### Where the current price comes from
+
+The same quote store the watchlist fills, so the two tabs can never disagree about where
+a stock is. Held tickers are refreshed on the same schedule, through the same feeds, in
+the same request; a ticker both held and watched is fetched once. When a relay is
+collecting on its own schedule, the portfolio's tickers are pushed to it alongside the
+watchlist, so what you hold is waiting in the snapshot too. Watched names lead the list,
+since they are the ones the yield target notifies on.
+
+A ticker that has just joined the portfolio is fetched immediately rather than waiting
+for the next scheduled run. A stale quote is labelled as stale rather than dropped, and a
+card with no quote yet says so — the same rule the watchlist follows.
 
 ## Watchlist
 
@@ -145,6 +216,9 @@ alongside the watchlist itself; on a merge import, a note already on the device 
   in the app, so a candidate and a position you hold are directly comparable.
 
 ### Where the quotes come from
+
+One refresh covers this list and everything held in the portfolio — see *The stock behind
+each contract* above — so a ticker that is both watched and held is fetched once.
 
 **Cboe's delayed-quote CDN, through your own relay, is what actually works** — one
 request returns the underlying and its whole chain, with no key, no sign-up and no
@@ -241,9 +315,10 @@ on this schedule by itself and the app reads the result when it opens — **one 
 instead of two per ticker**, no rate-limit stagger to sit through, and data that is current
 whether or not the phone was awake.
 
-- `/watch?set=…` — the app pushes its watchlist whenever it changes, so the relay knows
-  what to collect. A GET, so it stays a simple request; the origin lock is what keeps
-  anyone else from rewriting it.
+- `/watch?set=…` — the app pushes what it needs prices for whenever that changes — the
+  watchlist and the tickers it holds — so the relay knows what to collect. A GET, so it
+  stays a simple request; the origin lock is what keeps anyone else from rewriting it.
+  The relay keeps the first 40, and watched names are sent first.
 - `/snapshot` — everything, in one response.
 - `/collect` — collect now, for testing the path without waiting for a cron.
 
@@ -294,6 +369,15 @@ actually at risk:
 - **Capital efficiency** — open positions ranked by annualized return, weakest
   flagged, which is the one to close or roll first. The Watchlist tab takes this one
   step further and prices the switch against a live candidate.
+- **Distance from the stock** — the average distance the contracts were written at,
+  the average distance the open ones stand at now, how far the stock has moved under
+  them, and how many are through their strike today. Under those, **what each distance
+  returned**: closed trades bucketed by how far out they were written (in the money /
+  0–2% / 2–5% / 5–10% / 10%+) with win rate, P&L and capital-weighted annualized ROI
+  in distance order, so the trade-off is legible — closer to the money pays more and
+  gets touched more often, and this says whether it has actually been worth it on your
+  own trades. Trades with no price at execution sit out of these figures rather than
+  being guessed at, and the tab says how many that is.
 
 ## Number formatting
 
@@ -389,6 +473,10 @@ to install it as an app.
 ## Development notes
 
 - No build step; edit `index.html` / `app.js` directly.
+- Trade records carry two optional fields for the stock at execution — `spotAtOpen`
+  and `spotSource` (`entry` / `close` / `manual`). Records saved before they existed
+  are valid without them and get filled in by the backfill; nothing in the app treats
+  their absence as an error.
 - The service worker is network-first, so deploys show up on next load with a
   network connection. The in-app **Update App** button clears the cache explicitly.
 - External dependencies (Tesseract.js for OCR, SheetJS for Excel export) are

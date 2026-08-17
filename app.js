@@ -131,6 +131,37 @@ function tradeCapital(t) {
   return currentStrike(t) * 100 * tradeQty(t);
 }
 
+/* ── The stock behind the contract ──
+   A strike on its own says nothing; the distance from where the stock was
+   trading when the contract was written is the decision that was actually
+   made. So the price at execution is stamped onto the trade — from the quote
+   already on hand when it is logged the same day, from a daily history feed
+   for anything logged after the fact. It is a fact about the trade, not
+   something to re-derive later, so it travels in a backup and never moves.
+
+   Distance is signed the way a seller thinks about it: positive is out of the
+   money, negative is through the strike. A put is out of the money below the
+   stock and a call above it, so this makes the two read the same way despite
+   pointing in opposite directions. */
+const spotAtOpen = t => (numOr0(t && t.spotAtOpen) > 0 ? numOr0(t.spotAtOpen) : null);
+
+function otmPct(type, strike, spot) {
+  if (!(spot > 0) || !(strike > 0)) return null;
+  return (type === 'call' ? strike - spot : spot - strike) / spot * 100;
+}
+// Where the contract was written: the original strike against that day's price.
+// Rolls are later decisions at later prices, so they are not this measurement.
+const openedOtmPct  = t => otmPct(t.type, numOr0(t.strikePrice), spotAtOpen(t));
+// Where it stands now: the strike in force against the latest quote
+const currentOtmPct = (t, price) => otmPct(t.type, currentStrike(t), price);
+
+// How the price at execution was arrived at, for the card to say so plainly
+const SPOT_SRC_LABEL = {
+  entry:  'price when logged',
+  close:  'close that day',
+  manual: 'entered by hand'
+};
+
 /* ── Share positions (the wheel) ──
    A put assignment hands you shares. Those shares tie up capital until
    they are called away or sold, and every premium collected along the way
@@ -397,6 +428,46 @@ function addROIUpdate() {
   }
 }
 
+/* A quote taken today is the stock at execution. An older one is not, and
+   saying so is the whole point — the history feed will fetch the right day
+   instead rather than stamping last week's price onto this week's trade. */
+function spotAtEntry(ticker) {
+  const q = tickerQuote(ticker);
+  return (q && String(q.asOf || '').slice(0, 10) === todayStr()) ? q.price : null;
+}
+
+/* The price at execution by hand, for a trade the feeds cannot answer for —
+   a delisted symbol, a fill nowhere near the day's close, or a browser the
+   history feed refuses. Blank clears it and lets the backfill try again. */
+function setSpotAtOpen(id) {
+  const t = load().trades.find(x => x.id === id);
+  if (!t) return;
+  const cur = spotAtOpen(t);
+  const val = prompt(
+    `What was ${t.ticker} trading at when this contract was written on ${t.dateOpened}?\n\n`
+    + 'This sets the distance the strike was written at and the move since.\n'
+    + 'Leave blank to clear it and let the app fetch that day again.',
+    cur == null ? '' : String(cur));
+  if (val === null) return;
+  const v = val.trim();
+  const n = parseFloat(v);
+  if (v && !(n > 0)) { alert('Enter a price greater than zero, e.g. 210.40'); return; }
+
+  const d  = load();
+  const tr = d.trades.find(x => x.id === id);
+  if (!tr) return;
+  if (v) { tr.spotAtOpen = n; tr.spotSource = 'manual'; }
+  else   { delete tr.spotAtOpen; delete tr.spotSource; }
+  save(d);
+  // Clearing it is a request to try again, so the day's failure is forgotten
+  if (!v) {
+    const m = loadMarket();
+    if (m.spotMisses) { delete m.spotMisses[spotMissKey(tr)]; saveMarket(m); }
+  }
+  renderActive();
+  renderAnalysisIfOpen();
+}
+
 function addTrade() {
   const ticker  = document.getElementById('a-ticker').value.trim().toUpperCase();
   const strike  = parseFloat(document.getElementById('a-strike').value);
@@ -409,16 +480,23 @@ function addTrade() {
   const d = load();
   const positionId = addType === 'call'
     ? (document.getElementById('a-covers')?.value || null) : null;
+  const spot = spotAtEntry(ticker);
   d.trades.push({
     id: uid(), ticker, strikePrice: strike, premium, qty,
     type: addType, dteAtExecution: dte, expDate,
     roiAtExecution: roiPct(premium, strike, dte),
     dateOpened: todayStr(), status: 'active', rolls: [], closeInfo: null,
+    ...(spot != null ? { spotAtOpen: spot, spotSource: 'entry' } : {}),
     ...(positionId ? { positionId } : {})
   });
   save(d);
   closeOverlay('m-add');
   renderActive(); updateStats();
+  // A name that has just joined the portfolio needs a price of its own, and
+  // the day it was written needs one too when there was no quote to stamp.
+  ensureQuote(ticker);
+  syncWatchlistToRelay();
+  if (spot == null) backfillSpots(true);
 }
 
 /* ═══════════════════════════════════════
@@ -898,6 +976,10 @@ function commitBatch() {
   document.getElementById('bt-preview').innerHTML = '';
   document.getElementById('bt-commit').style.display = 'none';
   renderBatchDone(good.length, bad.length);
+  // Historic entries are exactly the ones with no quote to stamp, so start
+  // fetching the day each was written from the daily history feed.
+  syncWatchlistToRelay();
+  backfillSpots(true);
 }
 
 function renderBatchDone(added, remaining) {
@@ -1341,13 +1423,8 @@ function confirmDelete() {
 /* ═══════════════════════════════════════
    RENDER: ACTIVE TRADES
 ═══════════════════════════════════════ */
-// The best watchlist candidate, resolved once per render rather than once
-// per card — every open position is measured against the same alternative.
-let _altBest = null;
-
 function renderActive() {
   const d = load();
-  _altBest = bestCandidate();
   const trades = d.trades.filter(t => t.status === 'active');
   document.getElementById('active-count').textContent = trades.length + ' position' + (trades.length !== 1 ? 's' : '');
   const el = document.getElementById('active-list');
@@ -1373,6 +1450,48 @@ function renderPositions(d) {
   document.getElementById('pos-count').textContent =
     fmtInt(open.reduce((s,p) => s + p.shares, 0)) + ' shares';
   list.innerHTML = open.map(p => positionCardHTML(p, d)).join('');
+}
+
+/* The same three figures for a share lot, where the price at execution is not
+   something to fetch: it is the cost basis, the strike you were put at. The
+   note goes one step further than a trade card's and measures the stock
+   against the net basis, since that — not the price paid — is where a wheel
+   cycle breaks even. */
+function lotStockStripHTML(p, netBasis) {
+  const q   = tickerQuote(p.ticker);
+  const px  = q ? q.price : null;
+  const chg = px != null ? px - p.costBasis : null;
+  const pct = px != null ? chg / p.costBasis * 100 : null;
+  const vs  = (px != null && netBasis > 0) ? (px - netBasis) / netBasis * 100 : null;
+  const how = p.sourceTradeId ? 'Assigned' : 'Acquired';
+
+  return `<div class="tc-stock">
+    <div><div class="m-label">At ${how === 'Assigned' ? 'Assignment' : 'Purchase'}</div>
+      <div class="tcs-val">${fmtMoney(p.costBasis)}</div>
+      <div class="tcs-sub">${esc(p.dateAcquired)} · ${how === 'Assigned'
+        ? 'put to you at the strike' : 'what the shares cost'}</div></div>
+    <div><div class="m-label">Stock Now</div>
+      ${px != null
+        ? `<div class="tcs-val">${fmtMoney(px)}</div>
+           <div class="tcs-sub">${esc(q.source || '')}${q.asOf
+             ? ' · ' + esc(quoteAgeDays(q) > STALE_DAYS
+                 ? 'stale · ' + new Date(q.asOf).toLocaleDateString()
+                 : new Date(q.asOf).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+             : ''}</div>`
+        : `<div class="tcs-val muted">${_wlPending[p.ticker] ? '…' : '—'}</div>
+           <div class="tcs-sub">${_wlPending[p.ticker] ? 'fetching…' : 'no quote yet'}</div>`}</div>
+    <div><div class="m-label">Since ${how}</div>
+      ${pct != null
+        ? `<div class="tcs-val ${pct > 0 ? 'green' : pct < 0 ? 'red' : ''}">${(pct > 0 ? '+' : '') + fmtPct(pct)}</div>
+           <div class="tcs-sub">${fmtSigned(chg)} a share · ${fmtSigned(chg * p.shares)} on ${fmtInt(p.shares)} shares</div>`
+        : `<div class="tcs-val muted">—</div><div class="tcs-sub">needs a quote</div>`}</div>
+    ${vs != null ? `<div class="tcs-note">
+      The stock is <b>${fmtPct(Math.abs(vs))}</b> ${vs >= 0 ? 'above' : 'below'} the
+      <b>${fmtMoney(netBasis)}</b> net basis${vs >= 0
+        ? ' — the cycle closes green from here.'
+        : ' — premiums still have that far to go.'}
+    </div>` : ''}
+  </div>`;
 }
 
 function positionCardHTML(p, d) {
@@ -1419,6 +1538,7 @@ function positionCardHTML(p, d) {
         </div>
       </div>
     </div>
+    ${lotStockStripHTML(p, netBasis)}
     <div class="pc-basis-note">
       Break even at <b>${fmtMoney(netBasis)}</b> a share — ${fmtMoney(prem)} of premium has come
       off the ${fmtMoney(p.costBasis)} you paid${covered.length ? '' : '. Writing a call against these shares keeps that falling.'}
@@ -1433,6 +1553,64 @@ function positionCardHTML(p, d) {
   </div>`;
 }
 
+/* ── The underlying, on the card ──
+   Three figures in the order the question gets asked: where the stock was when
+   the contract was written, where it is now, and the move between them — as a
+   percentage and in money, per share and across the shares the contract is
+   written over, because the same percentage is very different money on one
+   contract than on five.
+   Under them, the distance that actually matters: how far the strike sits from
+   the stock today against how far it sat the day it was written. A put drifting
+   toward its strike is the whole reason to look. */
+function stockStripHTML(t, id) {
+  const s   = stockMark(t);
+  const sh  = 100 * tradeQty(t);
+  const set = `onclick="setSpotAtOpen('${esc(id)}')"`;
+
+  const openCell = s.open != null
+    ? `<div class="tcs-val">${fmtMoney(s.open)}</div>
+       <div class="tcs-sub">${esc(t.dateOpened)} · ${esc(SPOT_SRC_LABEL[s.openSrc] || 'recorded')}
+         <button class="tcs-x" ${set}>edit</button></div>`
+    : `<div class="tcs-val muted">—</div>
+       <div class="tcs-sub">${s.miss
+           ? 'the history feed refused'
+           : 'fetching that day&rsquo;s close'}
+         <button class="tcs-x" ${set}>enter by hand</button></div>`;
+
+  const nowCell = s.price != null
+    ? `<div class="tcs-val">${fmtMoney(s.price)}</div>
+       <div class="tcs-sub">${s.stale
+           ? 'stale · ' + esc(new Date(s.asOf).toLocaleDateString())
+           : esc(new Date(s.asOf).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}${
+         s.source ? ' · ' + esc(s.source) : ''}</div>`
+    : `<div class="tcs-val muted">—</div>
+       <div class="tcs-sub">${s.pending ? 'fetching…' : 'no quote yet'}</div>`;
+
+  const moveCell = s.pct != null
+    ? `<div class="tcs-val ${s.pct > 0 ? 'green' : s.pct < 0 ? 'red' : ''}">${
+         (s.pct > 0 ? '+' : '') + fmtPct(s.pct)}</div>
+       <div class="tcs-sub">${fmtSigned(s.chg)} a share · ${fmtSigned(s.chg * sh)} on ${fmtInt(sh)} shares</div>`
+    : `<div class="tcs-val muted">—</div>
+       <div class="tcs-sub">needs both prices</div>`;
+
+  const side = t.type === 'call' ? 'above' : 'below';
+  const note = s.otmNow != null ? `<div class="tcs-note">
+      Strike <b>${fmtMoney(currentStrike(t))}</b> ${s.otmNow >= 0
+        ? `sits <b>${fmtPct(s.otmNow)}</b> ${side} the stock`
+        : `is <b>${fmtPct(Math.abs(s.otmNow))}</b> through the stock — in the money`}${
+      s.otmOpen != null
+        ? `, against <b>${fmtPct(s.otmOpen)}</b> ${side} the day it was written`
+        : ''}.
+    </div>` : '';
+
+  return `<div class="tc-stock">
+    <div><div class="m-label">At Execution</div>${openCell}</div>
+    <div><div class="m-label">Stock Now</div>${nowCell}</div>
+    <div><div class="m-label">Since Opened</div>${moveCell}</div>
+    ${note}
+  </div>`;
+}
+
 function tradeCardHTML(t) {
   const tp  = totalPremiums(t);
   const cs  = currentStrike(t);
@@ -1443,26 +1621,11 @@ function tradeCardHTML(t) {
   const drVal = dr < 0 ? 'past exp' : fmtInt(dr) + 'd';
   const drCls = dr <= 5 ? ' red' : '';
 
-  // Below the breakeven buy-back price, closing now annualizes better than
-  // holding to expiry — the single most useful call a premium seller makes.
-  const be = closeEarlyBreakeven(t);
-  const hintHTML = (be.left > 0 && be.elapsed > 0) ? `
-    <div class="tc-hint${be.elapsed / be.span >= 0.5 ? ' good' : ''}">
-      Buy back at <b>${fmtMoney(be.price)}</b> or less and closing now beats holding
-      to expiry — ${fmtInt(be.elapsed)} of ${fmtInt(be.span)} days done, ${fmtInt(be.left)} left.
-    </div>` : '';
-
-  // The same call with somewhere better to put the money: when the watchlist
-  // holds a candidate clearly beating this position's rate, the price worth
-  // paying to get out rises by whatever that capital would earn there instead.
-  // Same ticker is not a rotation, and a thin edge does not cover two spreads.
-  const alt = _altBest;
-  const altHTML = (alt && be.left > 0 && tradeCapital(t) > 0
-                   && alt.ticker !== t.ticker && alt.roi >= roi * MIN_SWITCH_EDGE) ? `
-    <div class="tc-hint" style="margin-top:-4px">
-      Or up to <b>${fmtMoney(switchBreakeven(t, alt.roi).altPrice)}</b> if you roll the capital
-      into <b>${esc(alt.ticker)}</b> ${fmtMoney(alt.strike)}p at ${fmtPct(alt.roi)}.
-    </div>` : '';
+  /* No close-early or switch advice on the card. The buy-back break-even and
+     the price worth paying to rotate into a watchlist candidate are still
+     computed — the Watchlist tab's "Close to fund it" table is where they are
+     asked for, next to the candidate they are about. On the card they were
+     unasked-for advice on every position, every time. */
 
   const rollHistHTML = rolled ? `
     <div class="roll-hist">
@@ -1515,8 +1678,7 @@ function tradeCardHTML(t) {
         </div>
       </div>
     </div>
-    ${hintHTML}
-    ${altHTML}
+    ${stockStripHTML(t, t.id)}
     ${rollHistHTML}
     <div class="tc-actions">
       <button class="act-btn grn" onclick="openExpire('${t.id}')">Expired</button>
@@ -1757,6 +1919,28 @@ function breakdown(items, keyFn) {
   })).sort((a,b) => b.roi - a.roi);
 }
 
+/* How far from the stock a contract was written. The other half of the same
+   decision as the term, and the one that trades premium against the odds of
+   being assigned: closer to the money pays more and gets touched more often.
+   Buckets rather than a scatter, because with a few dozen trades a bucket is
+   the only reading that means anything. */
+const DIST_BUCKETS = ['in the money', '0–2%', '2–5%', '5–10%', '10%+'];
+function distBucket(pct) {
+  if (pct == null) return null;
+  if (pct < 0)   return 'in the money';
+  if (pct <= 2)  return '0–2%';
+  if (pct <= 5)  return '2–5%';
+  if (pct <= 10) return '5–10%';
+  return '10%+';
+}
+// Distance reads in order, not best-first: the shape of the trend is the point
+const byDistance = (a, b) => DIST_BUCKETS.indexOf(a.key) - DIST_BUCKETS.indexOf(b.key);
+
+const avgOf = (list, fn) => {
+  const vals = list.map(fn).filter(v => v != null && isFinite(v));
+  return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
+};
+
 // The term written is the decision the trader makes, so bucket by that
 function dteBucket(t) {
   const d = t.dteAtExecution || 0;
@@ -1807,9 +1991,12 @@ function closedItemMeta(i) {
   const perSh = t.status === 'closed_early' ? tp - (t.closeInfo?.buyingPrice || 0) : tp;
   const roi   = roiPct(perSh, currentStrike(t), i.days);
   const rolls = (t.rolls || []).length;
+  const otm   = openedOtmPct(t);
   return `premium <b>${fmtMoney(tp)}</b>${t.status === 'closed_early'
       ? ` less <b>${fmtMoney(t.closeInfo?.buyingPrice || 0)}</b> bought back` : ''}
     · ${fmtInt(i.days)}d · <b>${fmtPct(roi)}</b> ann. ROI${rolls ? ` · rolled ${fmtInt(rolls)}×` : ''}
+    ${otm == null ? '' : `· written <b>${fmtPct(Math.abs(otm))}</b> ${otm < 0 ? 'through' : 'from'} ${
+      fmtMoney(spotAtOpen(t))}`}
     · ${esc(t.dateOpened)} → ${esc(tradeEndDate(t))}`;
 }
 
@@ -1916,6 +2103,109 @@ function renderAnalysis() {
       </div>`), ['Position', 'Capital', 'Ann. ROI', '']);
   }
 
+  /* ── Distance from the stock ──
+     A strike is only meaningful next to where the stock was when it was
+     written. Two questions follow from that, and they are different: how far
+     out the contracts were written on average, and whether writing closer
+     actually paid. The first is a habit, the second is whether the habit is
+     earning its risk. */
+  const priced  = d.trades.filter(t => openedOtmPct(t) != null);
+  const marked  = active.map(t => ({ t, m: stockMark(t) })).filter(x => x.m.price != null);
+  const avgOpen = avgOf(priced, t => openedOtmPct(t));
+  const avgNow  = avgOf(marked, x => x.m.otmNow);
+  const avgMove = avgOf(marked, x => x.m.pct);
+  const throughStrike = marked.filter(x => x.m.otmNow < 0).length;
+  const unpriced = d.trades.length - priced.length;
+
+  if (priced.length || marked.length) {
+    html += `<div class="bt-preview-hdr">Distance From The Stock</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+        <div class="stat-card">
+          <div class="stat-label">Opened Away From Spot</div>
+          <div class="stat-value neu">${avgOpen == null ? '—' : fmtPct(avgOpen)}</div>
+          <div class="stat-sub">${priced.length
+            ? `average of ${fmtInt(priced.length)} of ${fmtInt(d.trades.length)} trades priced`
+            : 'no execution prices yet'}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Away From Spot Now</div>
+          <div class="stat-value ${avgNow == null ? 'neu' : avgNow >= 0 ? 'pos' : 'neg'}">${
+            avgNow == null ? '—' : fmtPct(avgNow)}</div>
+          <div class="stat-sub">${marked.length
+            ? `${fmtInt(marked.length)} open position${marked.length === 1 ? '' : 's'} marked to a quote`
+            : 'no quotes for what you hold'}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Stock Since Opened</div>
+          <div class="stat-value ${avgMove == null ? 'neu' : avgMove >= 0 ? 'pos' : 'neg'}">${
+            avgMove == null ? '—' : (avgMove > 0 ? '+' : '') + fmtPct(avgMove)}</div>
+          <div class="stat-sub">average move under the open contracts</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Through The Strike</div>
+          <div class="stat-value ${throughStrike ? 'neg' : 'neu'}">${
+            marked.length ? fmtInt(throughStrike) : '—'}</div>
+          <div class="stat-sub">${marked.length
+            ? `of ${fmtInt(marked.length)} marked · in the money today`
+            : 'nothing to mark'}</div>
+        </div>
+      </div>`;
+
+    // Say what is missing and offer the one action that closes the gap. Two
+    // different gaps, two different fixes: a price at execution comes from the
+    // history feed, a price now from the quote feeds.
+    if (unpriced > 0) {
+      html += `<div class="risk-note">
+        ${fmtInt(unpriced)} of ${fmtInt(d.trades.length)} trades have no stock price at execution
+        yet, so they sit out of these figures. They are filled in from the daily history feed a
+        few at a time as the app runs.
+        <button class="wl-x wl-ctl" onclick="fetchSpotsNow()">fetch now</button>
+        ${quoteProxy() ? '' : '<button class="wl-x wl-ctl" onclick="openQuoteSource()">set up a relay</button>'}
+      </div>`;
+    }
+    if (active.length && !marked.length) {
+      html += `<div class="risk-note">
+        None of the open positions has a current quote, so nothing can be marked against the stock.
+        The feeds usually refuse a browser outright — a relay is the way through.
+        <button class="wl-x wl-ctl" onclick="openQuoteSource()">fix the source</button>
+      </div>`;
+    }
+
+    // Did writing closer pay? Only closed trades can answer — an open one has
+    // not earned anything yet — so this is realized option P&L, in distance
+    // order rather than best-first.
+    const distItems = items.filter(i => i.kind === 'option' && openedOtmPct(i.ref) != null);
+    const distRows  = breakdown(distItems, i => distBucket(openedOtmPct(i.ref))).sort(byDistance);
+    if (distRows.length) {
+      html += breakdownCardHTML('By distance at open', 'strike vs the stock that day',
+        distRows.map(groupRowHTML), ['Opened', 'Win', 'P&L', 'Ann. ROI']);
+    }
+
+    // The comparison the buckets are there to make. In-the-money writes are a
+    // different trade, so the sentence stays between the out-of-the-money ones.
+    const otmRows = distRows.filter(r => r.key !== 'in the money');
+    if (otmRows.length >= 2) {
+      const near = otmRows[0], far = otmRows[otmRows.length - 1];
+      const edge = near.roi - far.roi;
+      const thin = Math.min(near.n, far.n) < 3;
+      html += `<div class="risk-note">
+        Writing <b>${esc(near.key)}</b> from the stock annualized <b>${fmtPct(near.roi)}</b> over
+        ${fmtInt(near.n)} trade${near.n === 1 ? '' : 's'} at a ${fmtPct(near.wins / near.n * 100)} win
+        rate; <b>${esc(far.key)}</b> annualized <b>${fmtPct(far.roi)}</b> over ${fmtInt(far.n)}
+        at ${fmtPct(far.wins / far.n * 100)}.
+        ${Math.abs(edge) < 1
+          ? 'Distance has made no real difference to the return so far.'
+          : edge > 0
+            ? `Closer has paid <b>${fmtPct(Math.abs(edge))}</b> more annualized — the premium for
+               standing nearer the strike${near.wins / near.n < far.wins / far.n
+                 ? ', and it is the bucket that gets touched more often.' : '.'}`
+            : `Further out has paid <b>${fmtPct(Math.abs(edge))}</b> more annualized, so the
+               nearer strikes are not being paid for the risk they carry.`}
+        ${thin ? ' Both buckets are thin — a handful of trades is a hint, not a finding.' : ''}
+      </div>`;
+    }
+  }
+
   /* ── What actually works ── */
   if (items.length) {
     const optionItems = items.filter(i => i.kind === 'option');
@@ -2008,6 +2298,10 @@ const saveMarket = m => {
 };
 const marketQuotes = () => loadMarket().quotes || {};
 
+// The one place anything asks "where is this stock now?". A stored quote with
+// no usable price is no quote at all.
+const tickerQuote = tk => { const q = marketQuotes()[tk]; return (q && q.price > 0) ? q : null; };
+
 // The watchlist itself lives with the trades, so it travels in a backup —
 // as does the note against each ticker. Quotes deliberately do not: they are
 // derived, they go stale, and a backup should not carry yesterday's prices.
@@ -2025,6 +2319,26 @@ function saveWatchNote(tk, note) {
   const txt = String(note || '').trim().slice(0, 80);
   if (txt) d.watchNotes[tk] = txt; else delete d.watchNotes[tk];
   save(d);
+}
+
+/* ── What needs a price ──
+   The watchlist is what you are shopping; the portfolio is what you already
+   hold, and its cards are marked against the same quotes — where the stock is
+   now, and how far it has come since each contract was written. Both sets go
+   through one refresh so a ticker held and watched is fetched once, and the
+   two tabs can never disagree about where a stock is.
+   Watched names lead: they are the ones the yield target notifies on, and on
+   a slow keyed refresh order decides what lands first. */
+function portfolioTickers(d) {
+  d = d || load();
+  const out = new Set();
+  d.trades.forEach(t => { if (t.status === 'active') out.add(t.ticker); });
+  loadPositions(d).filter(p => p.status === 'open').forEach(p => out.add(p.ticker));
+  return Array.from(out);
+}
+function quoteTickers() {
+  const wl = loadWatchlist();
+  return wl.concat(portfolioTickers().filter(tk => !wl.includes(tk)));
 }
 
 /* ── Preferences ──
@@ -2338,6 +2652,193 @@ async function fetchQuote(ticker) {
   throw new Error(errs.join(' · '));
 }
 
+/* ── Where the stock was on a past day ──
+   The other half of the portfolio's picture, and a different question from a
+   quote: one daily bar, once, for a date that will never change its answer. A
+   trade logged the day it was opened takes the price from the quote already on
+   hand; a batch of historic trades, an OCR'd screenshot or anything entered
+   late needs the close on the day it was written.
+
+   A trade opened on a weekend or a holiday has no bar of its own — the entry
+   was really made against the last session before it — so these take the most
+   recent close at or before the date rather than insisting on the date itself. */
+const HISTORY_LOOKBACK_DAYS = 10;   // far enough back to clear a long weekend
+
+async function historyMassive(ticker, iso, viaProxy) {
+  const key = massiveKey();
+  if (!key && !relayHoldsKey()) throw new Error('no API key set');
+  if (viaProxy && proxyIsPublic()) throw new Error('skipped — a key is never sent through a public relay');
+  if (!key && !viaProxy) throw new Error('relay holds the key — needs the relay route');
+  const auth = key ? `&apiKey=${encodeURIComponent(key)}` : '';
+  const from = new Date(new Date(iso + 'T00:00:00Z').getTime() - HISTORY_LOOKBACK_DAYS * 86400000)
+    .toISOString().slice(0, 10);
+  // Newest first, so the first row is the session being asked about
+  const j = await fetchJSON(
+    `https://api.massive.com/v2/aggs/ticker/${encodeURIComponent(ticker)}`
+    + `/range/1/day/${from}/${iso}?adjusted=true&sort=desc&limit=10` + auth, viaProxy);
+  const c = numOrNull(j?.results?.[0]?.c);
+  if (!(c > 0)) throw new Error('no daily bar returned');
+  return c;
+}
+
+async function historyYahoo(ticker, iso, viaProxy) {
+  const t0 = new Date(iso + 'T00:00:00Z').getTime();
+  const p1 = Math.floor((t0 - HISTORY_LOOKBACK_DAYS * 86400000) / 1000);
+  const p2 = Math.floor((t0 + 2 * 86400000) / 1000);
+  const j = await fetchJSON(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}`
+    + `?period1=${p1}&period2=${p2}&interval=1d`, viaProxy);
+  const r      = j?.chart?.result?.[0];
+  const stamps = r?.timestamp || [];
+  const closes = r?.indicators?.quote?.[0]?.close
+              || r?.indicators?.adjclose?.[0]?.adjclose || [];
+  if (!stamps.length) throw new Error('no daily bars');
+  // Daily bars are stamped at the opening bell, so the UTC date of the stamp
+  // is the session's own date either side of daylight saving.
+  let px = null;
+  stamps.forEach((s, i) => {
+    const c = numOrNull(closes[i]);
+    if (c > 0 && new Date(numOr0(s) * 1000).toISOString().slice(0, 10) <= iso) px = c;
+  });
+  if (!(px > 0)) throw new Error('no close on or before ' + iso);
+  return px;
+}
+
+// Massive leads when a key is in play, for the same reason it does on quotes.
+// Cboe's delayed-quote feed has no history to offer, so it sits this one out.
+const historyProviders = () => (massiveEnabled()
+  ? [{ name: 'Massive', fn: historyMassive }, { name: 'Yahoo', fn: historyYahoo }]
+  : [{ name: 'Yahoo', fn: historyYahoo }]);
+
+// Direct first, the relay only once every provider has failed on its own —
+// the same two-pass shape a quote takes.
+async function fetchDailyClose(ticker, iso) {
+  const errs = [];
+  for (const viaProxy of (quoteProxy() ? [false, true] : [false])) {
+    for (const p of historyProviders()) {
+      try { return await p.fn(ticker, iso, viaProxy); }
+      catch (e) { errs.push(`${p.name}: ${e.message || e}`); }
+    }
+  }
+  throw new Error(errs.join(' · '));
+}
+
+/* ── Filling the price at execution in ──
+   One fetch per ticker-and-date, whatever it takes: trades opened together on
+   the same name share an answer, and once written the trade is never asked
+   about again. Failures are remembered for a day, so a delisted symbol or a
+   feed that refuses this browser does not turn into a burst of requests on
+   every load. A manual run ignores that memory — asking again is the point. */
+const SPOT_MISS_HOURS = 24;
+const SPOT_PER_PASS   = 10;   // a background pass stays small; the next one continues
+
+const spotMissKey = t => `${t.ticker}@${t.dateOpened}`;
+const spotMisses  = () => loadMarket().spotMisses || {};
+
+function noteSpotMiss(key, msg) {
+  const m   = loadMarket();
+  const cut = Date.now() - SPOT_MISS_HOURS * 3600000;
+  m.spotMisses = m.spotMisses || {};
+  // Expired misses are dead weight rather than history worth keeping
+  Object.entries(m.spotMisses).forEach(([k, v]) => {
+    if (!(new Date(v && v.at).getTime() > cut)) delete m.spotMisses[k];
+  });
+  m.spotMisses[key] = { at: new Date().toISOString(), error: String(msg).slice(0, 200) };
+  saveMarket(m);
+}
+
+// Trades still missing a price, actives first and newest first inside that —
+// the open positions are the ones a decision is being made about today.
+function spotBackfillQueue(d, ignoreMisses) {
+  const misses = ignoreMisses ? {} : spotMisses();
+  const cut    = Date.now() - SPOT_MISS_HOURS * 3600000;
+  const want   = (d || load()).trades
+    .filter(t => spotAtOpen(t) == null && DATE_RE.test(t.dateOpened || '') && TICKER_RE.test(t.ticker || ''))
+    .sort((a, b) => (a.status === 'active' ? 0 : 1) - (b.status === 'active' ? 0 : 1)
+                 || (a.dateOpened < b.dateOpened ? 1 : a.dateOpened > b.dateOpened ? -1 : 0));
+  const seen = {}, out = [];
+  want.forEach(t => {
+    const key  = spotMissKey(t);
+    const miss = misses[key];
+    if (seen[key] || (miss && new Date(miss.at).getTime() > cut)) return;
+    seen[key] = true;
+    out.push({ key, ticker: t.ticker, date: t.dateOpened });
+  });
+  return out;
+}
+
+// Write a price onto every trade opened on that ticker that day. Returns how
+// many trades it answered for.
+function stampSpot(ticker, date, price, src) {
+  if (!(price > 0)) return 0;
+  const d = load();
+  let n = 0;
+  d.trades.forEach(t => {
+    if (t.ticker === ticker && t.dateOpened === date && spotAtOpen(t) == null) {
+      t.spotAtOpen = Math.round(price * 10000) / 10000;
+      t.spotSource = src;
+      n++;
+    }
+  });
+  if (n) save(d);
+  return n;
+}
+
+let _spotRunning = false;
+
+// Returns how many trades were given a price at execution.
+async function backfillSpots(manual) {
+  if (_spotRunning || navigator.onLine === false) return 0;
+  const queue = spotBackfillQueue(null, manual).slice(0, SPOT_PER_PASS);
+  if (!queue.length) return 0;
+  _spotRunning = true;
+  const gap = staggerFor(manual);
+  let filled = 0;
+  try {
+    for (let i = 0; i < queue.length; i++) {
+      if (i) await sleep(gap + Math.random() * STAGGER_JITTER);
+      const job = queue[i];
+      try {
+        filled += stampSpot(job.ticker, job.date, await fetchDailyClose(job.ticker, job.date), 'close');
+      } catch (e) {
+        noteSpotMiss(job.key, e.message || e);
+      }
+      renderActive();
+    }
+  } finally {
+    _spotRunning = false;
+    renderActive();
+    renderAnalysisIfOpen();
+  }
+  return filled;
+}
+
+/* Asked for from the analysis tab, where the gap is visible and worth closing
+   on the spot rather than at the next scheduled run. */
+async function fetchSpotsNow() {
+  if (_spotRunning) { showToast('Already fetching the missing prices', null, null, 3000); return; }
+  if (navigator.onLine === false) {
+    showToast('Offline — the missing prices will be fetched once you reconnect', null, null, 4000);
+    return;
+  }
+  const outstanding = spotBackfillQueue(null, true).length;
+  showToast(`Fetching the stock price for ${fmtInt(Math.min(outstanding, SPOT_PER_PASS))} trade`
+    + (Math.min(outstanding, SPOT_PER_PASS) === 1 ? '' : 's') + '…', null, null, 4000);
+  const n = await backfillSpots(true);
+  showToast(n
+    ? `Filled in ${fmtInt(n)} price${n === 1 ? '' : 's'} at execution`
+    : 'No prices came back — the history feed is refusing this browser. A relay is the way through.',
+    null, null, 6000);
+}
+
+/* A ticker that has just joined the portfolio has nothing to mark against, and
+   the next scheduled run could be hours away. */
+function ensureQuote(tk) {
+  if (!tk || navigator.onLine === false) return;
+  if (_wlRunning || _wlPending[tk] || marketQuotes()[tk]) return;
+  refreshOne(tk).then(ok => { if (ok) { renderActive(); renderWatchlist(); } });
+}
+
 /* ── Picking the contract ──
    The strategy is a ~45-day put, so take the listed expiration closest to 45
    days out, preferring one inside the ±7-day window; if the chain has nothing
@@ -2460,11 +2961,14 @@ const relayBase = () => {
   try { return new URL(p).origin; } catch (e) { return null; }
 };
 
-// The relay collects on a schedule, so it has to know what to collect.
+// The relay collects on a schedule, so it has to know what to collect — the
+// watchlist and everything held, since the portfolio is marked from the same
+// quotes. The relay keeps the first MAX_WATCH of what it is sent, so the order
+// quoteTickers() returns is the order that survives a long list.
 function syncWatchlistToRelay() {
   const base = relayBase();
   if (!base || navigator.onLine === false) return;
-  fetch(`${base}/watch?set=${encodeURIComponent(loadWatchlist().join(','))}`,
+  fetch(`${base}/watch?set=${encodeURIComponent(quoteTickers().slice(0, MAX_WATCH).join(','))}`,
         { cache: 'no-store', mode: 'cors' }).catch(() => {});
 }
 
@@ -2474,7 +2978,7 @@ function syncWatchlistToRelay() {
    answer, and re-asking the feeds directly would only bury a useful message
    under the CORS failures that sent us to a relay in the first place. */
 function applySnapshot(snap) {
-  const watching = loadWatchlist();
+  const watching = quoteTickers();
   const m = loadMarket();
   m.quotes = m.quotes || {};
   let n = 0, seen = 0;
@@ -2512,9 +3016,10 @@ async function pullSnapshot() {
   } catch (e) { return { fresh: 0, seen: 0 }; }
 }
 
-// Returns how many tickers came back with a fresh quote.
-async function refreshWatchlist(manual, slotLabel) {
-  const list = loadWatchlist();
+// Refreshes every ticker the app needs a price for — watched and held alike.
+// Returns how many came back with a fresh quote.
+async function refreshQuotes(manual, slotLabel) {
+  const list = quoteTickers();
   if (_wlRunning || !list.length) return 0;
   if (navigator.onLine === false) {
     if (manual) showToast('Offline — showing the last prices fetched', null, null, 4000);
@@ -2529,7 +3034,8 @@ async function refreshWatchlist(manual, slotLabel) {
   if (snap.seen) {
     _wlRunning = false;
     if (slotLabel) { const mm = loadMarket(); mm.lastSlot = slotLabel; saveMarket(mm); }
-    renderWatchlist(); renderActive();
+    renderWatchlist(); renderActive(); renderAnalysisIfOpen();
+    backfillSpots(manual);
     return snap.fresh;
   }
 
@@ -2540,6 +3046,7 @@ async function refreshWatchlist(manual, slotLabel) {
       if (i) await sleep(gap + Math.random() * STAGGER_JITTER);
       if (await refreshOne(list[i])) fresh++;
       renderWatchlist();
+      renderActive();        // held tickers are on this list too
     }
   } finally {
     _wlRunning = false;
@@ -2550,10 +3057,18 @@ async function refreshWatchlist(manual, slotLabel) {
       saveMarket(m);
     }
     renderWatchlist();
-    renderActive();          // the close-vs-switch hints move with the quotes
+    renderActive();          // the cards are marked against these quotes
+    renderAnalysisIfOpen();
   }
+  // Current prices are only half of the portfolio's picture; the price each
+  // contract was written at is the other, and it comes from a different feed.
+  backfillSpots(manual);
   return fresh;
 }
+
+// The analysis tab reads the same quotes, but re-rendering it while it is not
+// on screen is work nobody sees.
+function renderAnalysisIfOpen() { if (currentTab === 'analysis') renderAnalysis(); }
 
 /* ── Schedule: 9:31 am and noon, New York time ──
    A page with no server can only act while it is open, so rather than firing
@@ -2671,13 +3186,13 @@ async function notifyTargetHits() {
 }
 
 async function checkMarketSchedule() {
-  if (_wlRunning || !loadWatchlist().length) return;
+  if (_wlRunning || !quoteTickers().length) return;
   const due = dueSlots();
   if (!due.length) return;
   // Missed slots are water under the bridge — one run brings everything
   // current, so take the latest and retire the rest.
   const run   = due[due.length - 1];
-  const fresh = await refreshWatchlist(false, run.label);
+  const fresh = await refreshQuotes(false, run.label);
   // A run that reached nothing at all — no connection, feeds down — leaves
   // the slot due so the next tick tries again rather than writing the day off.
   if (fresh) { markSlotsRun(due.map(s => s.key)); notifyTargetHits(); }
@@ -2741,8 +3256,10 @@ function removeWatchItem(tk) {
   saveWatchlist(before.filter(x => x !== tk));
   syncWatchlistToRelay();
   saveWatchNote(tk, '');
+  // The quote goes with the card — unless the ticker is also held, in which
+  // case the portfolio is still marking against it.
   const m = loadMarket();
-  if (m.quotes) { delete m.quotes[tk]; saveMarket(m); }
+  if (m.quotes && !portfolioTickers().includes(tk)) { delete m.quotes[tk]; saveMarket(m); }
   renderWatchlist();
 
   showToast(`${tk} removed from the watchlist`, 'Undo', () => {
@@ -2860,7 +3377,7 @@ function saveQuoteSource() {
   closeOverlay('m-wlsource');
   renderWatchlist();
   syncWatchlistToRelay();
-  if (prefix) refreshWatchlist(true);
+  if (prefix) refreshQuotes(true);
 }
 
 /* A status code is not an explanation. These are the failures that are
@@ -3048,6 +3565,31 @@ function bestCandidate() {
   return best;
 }
 
+/* ── Marking a position against the stock ──
+   Everything a portfolio card needs about the underlying, gathered in one
+   place: where the stock was when the contract was written, where it is now,
+   and the move between the two. The move is deliberately not called P&L — the
+   premium is the P&L on an option; this is where the stock has gone, which is
+   what decides whether the strike is still a comfortable distance away. */
+function stockMark(t) {
+  const open = spotAtOpen(t);
+  const q    = tickerQuote(t.ticker);
+  const both = open != null && q != null;
+  return {
+    open, openSrc: t.spotSource || null,
+    price:   q ? q.price : null,
+    asOf:    q ? q.asOf : null,
+    source:  q ? q.source : null,
+    stale:   !q || quoteAgeDays(q) > STALE_DAYS,
+    pending: !!_wlPending[t.ticker],
+    chg:     both ? q.price - open : null,
+    pct:     both ? (q.price - open) / open * 100 : null,
+    otmOpen: openedOtmPct(t),
+    otmNow:  q ? currentOtmPct(t, q.price) : null,
+    miss:    spotMisses()[spotMissKey(t)] || null
+  };
+}
+
 /* ═══════════════════════════════════════
    RENDER: WATCHLIST
 ═══════════════════════════════════════ */
@@ -3068,7 +3610,8 @@ function renderWatchlist() {
   const btn = document.getElementById('wl-refresh-btn');
   if (btn) {
     btn.classList.toggle('spinning', _wlRunning);
-    btn.disabled = _wlRunning || !list.length;
+    // A refresh is worth offering for held tickers even with nothing watched
+    btn.disabled = _wlRunning || !quoteTickers().length;
   }
 
   document.getElementById('wl-stats').innerHTML =
@@ -3308,7 +3851,7 @@ async function exportExcel() {
   ───────────────────────────────────── */
   const active = trades.filter(t => t.status === 'active');
   const activeRows = [
-    ['Ticker','Type','Strike','Qty','Premium','Total Premium','Income ($)','DTE','Ann. ROI (%)','Date Opened','Expiration','Rolls','Roll Strikes']
+    ['Ticker','Type','Strike','Qty','Premium','Total Premium','Income ($)','DTE','Ann. ROI (%)','Date Opened','Expiration','Rolls','Roll Strikes','Stock at Open','Opened OTM (%)','Stock Now','Since Opened (%)']
   ];
   active.forEach(t => {
     const tp  = totalPremiums(t);
@@ -3319,6 +3862,8 @@ async function exportExcel() {
     const rollStrikes = t.rolls.length
       ? t.rolls.map(r => fmtMoney(r.strikePrice)).join(' → ')
       : '—';
+    // The stock's side of the trade, blank rather than zero where it is unknown
+    const mk = stockMark(t);
     activeRows.push([
       t.ticker,
       t.type.toUpperCase(),
@@ -3332,14 +3877,19 @@ async function exportExcel() {
       t.dateOpened,
       currentExpDate(t),
       t.rolls.length,
-      rollStrikes
+      rollStrikes,
+      mk.open != null ? +mk.open.toFixed(2) : '—',
+      mk.otmOpen != null ? +mk.otmOpen.toFixed(2) : '—',
+      mk.price != null ? +mk.price.toFixed(2) : '—',
+      mk.pct != null ? +mk.pct.toFixed(2) : '—'
     ]);
   });
   const ws1 = XLSX.utils.aoa_to_sheet(activeRows);
-  ws1['!cols'] = colW([8,6,9,5,10,13,12,6,13,12,12,6,22]);
-  // Strike, Qty, Premium, Total Premium, Income, DTE, ROI
+  ws1['!cols'] = colW([8,6,9,5,10,13,12,6,13,12,12,6,22,13,14,11,15]);
+  // Strike, Qty, Premium, Total Premium, Income, DTE, ROI, and the stock columns
   applyNumberFormats(ws1, activeRows.length - 1,
-    { 2: XL_MONEY, 3: XL_INT, 4: XL_MONEY, 5: XL_MONEY, 6: XL_MONEY, 7: XL_INT, 8: XL_PCT, 11: XL_INT });
+    { 2: XL_MONEY, 3: XL_INT, 4: XL_MONEY, 5: XL_MONEY, 6: XL_MONEY, 7: XL_INT, 8: XL_PCT, 11: XL_INT,
+      13: XL_MONEY, 14: XL_PCT, 15: XL_MONEY, 16: XL_PCT });
   styleHeaderRow(ws1, activeRows[0].length);
   XLSX.utils.book_append_sheet(wb, ws1, 'Active Trades');
 
@@ -3350,7 +3900,7 @@ async function exportExcel() {
     .filter(t => t.status !== 'active')
     .sort((a,b) => new Date(b.closeInfo?.dateClosed||b.dateOpened) - new Date(a.closeInfo?.dateClosed||a.dateOpened));
   const histRows = [
-    ['Ticker','Type','Strike','Qty','Total Premium','Buy Price','P&L ($)','Ann. ROI (%)','Days Open','Status','Date Opened','Date Closed','Rolls']
+    ['Ticker','Type','Strike','Qty','Total Premium','Buy Price','P&L ($)','Ann. ROI (%)','Days Open','Status','Date Opened','Date Closed','Rolls','Stock at Open','Opened OTM (%)']
   ];
   closed.forEach(t => {
     const tp    = totalPremiums(t);
@@ -3372,14 +3922,17 @@ async function exportExcel() {
       t.status === 'expired' ? 'Expired' : 'Closed Early',
       t.dateOpened,
       t.closeInfo?.dateClosed || '—',
-      t.rolls.length
+      t.rolls.length,
+      spotAtOpen(t) != null ? +spotAtOpen(t).toFixed(2) : '—',
+      openedOtmPct(t) != null ? +openedOtmPct(t).toFixed(2) : '—'
     ]);
   });
   const ws2 = XLSX.utils.aoa_to_sheet(histRows);
-  ws2['!cols'] = colW([8,6,9,5,14,10,10,13,11,12,12,12,6]);
-  // Strike, Qty, Total Premium, Buy Price, P&L, ROI, Days Open, Rolls
+  ws2['!cols'] = colW([8,6,9,5,14,10,10,13,11,12,12,12,6,13,14]);
+  // Strike, Qty, Total Premium, Buy Price, P&L, ROI, Days Open, Rolls, the stock at open
   applyNumberFormats(ws2, histRows.length - 1,
-    { 2: XL_MONEY, 3: XL_INT, 4: XL_MONEY, 5: XL_MONEY, 6: XL_MONEY, 7: XL_PCT, 8: XL_INT, 12: XL_INT });
+    { 2: XL_MONEY, 3: XL_INT, 4: XL_MONEY, 5: XL_MONEY, 6: XL_MONEY, 7: XL_PCT, 8: XL_INT, 12: XL_INT,
+      13: XL_MONEY, 14: XL_PCT });
   styleHeaderRow(ws2, histRows[0].length);
   XLSX.utils.book_append_sheet(wb, ws2, 'Trade History');
 
@@ -3732,6 +4285,12 @@ function normalizeTrade(raw) {
     dateOpened: DATE_RE.test(raw.dateOpened || '') ? raw.dateOpened : todayStr(),
     expDate:    DATE_RE.test(raw.expDate || '')    ? raw.expDate    : null,
     status, rolls: [], closeInfo: null,
+    // The stock at execution is a fact about the trade, so it travels in a
+    // backup. A record without one is not broken — it gets backfilled.
+    ...(num(raw.spotAtOpen) > 0 ? {
+      spotAtOpen: num(raw.spotAtOpen),
+      spotSource: SPOT_SRC_LABEL[raw.spotSource] ? raw.spotSource : 'manual'
+    } : {}),
     ...(typeof raw.positionId === 'string' ? { positionId: raw.positionId } : {})
   };
   if (Array.isArray(raw.rolls)) {
@@ -4384,14 +4943,20 @@ function rcAccept(idx, action) {
         save(d);
       }
     } else {
-      // Brand-new trade
+      // Brand-new trade. A screenshot is usually read some time after the fill,
+      // so the stock price for that day is left to the history backfill unless
+      // the trade is being logged the same day.
+      const spot = dateOp === todayStr() ? spotAtEntry(ticker) : null;
       d.trades.push({
         id: uid(), ticker, strikePrice: strike, premium: prem, qty,
         type, dteAtExecution: dte, expDate,
         roiAtExecution: roiPct(prem, strike, dte),
-        dateOpened: dateOp, status: 'active', rolls: [], closeInfo: null
+        dateOpened: dateOp, status: 'active', rolls: [], closeInfo: null,
+        ...(spot != null ? { spotAtOpen: spot, spotSource: 'entry' } : {})
       });
       save(d);
+      ensureQuote(ticker);
+      if (spot == null) backfillSpots(true);
     }
   }
 
@@ -4449,6 +5014,11 @@ renderNotifState();
 checkExpiryReminders();
 renderWatchlist();
 checkMarketSchedule();
+// Anything logged before this feature existed, or entered after the fact, has
+// no stock price at execution. Fill a few in on every open rather than all of
+// them at once: the queue remembers where it got to, and a day-old failure is
+// not retried until tomorrow.
+backfillSpots(false);
 
 // Handle ?tab= from manifest shortcuts
 (function(){
