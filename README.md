@@ -9,14 +9,15 @@ in your browser's localStorage; nothing is sent to a server.
 - **Portfolio** — active positions with strike, premium, contracts, live days-to-expiry
   (highlighted red when ≤ 5 days), income, and annualized ROI. The headline realized
   P&L figure is **year to date**, with the all-time total on the line beneath it.
-  Each card carries the buy-back price below which closing now beats holding, and the
-  stock behind the contract: what it was trading at when the contract was written, where
-  it is now, and the move since — as a percentage, per share and across the shares the
-  contract covers. Same for a share lot, measured from its cost basis. See below.
+  Each card carries the stock behind the contract: what it was trading at when the
+  contract was written, where it is now, and the move since — as a percentage, per share
+  and across the shares the contract covers. Same for a share lot, measured from its cost
+  basis. See below.
 - **The wheel** — assignment creates a share lot; covered calls written against it
   lower its basis; called away or sold closes the cycle. See below.
-- **Decision support** — close-early breakeven per position, roll-vs-close verdict,
-  capital efficiency ranking, and concentration/assignment risk.
+- **Decision support** — close-early breakeven and the roll-vs-switch price on the
+  Watchlist tab, roll-vs-close verdict on the roll sheet, capital efficiency ranking,
+  and concentration/assignment risk in Analysis. None of it on the position cards.
 - **Roll tracking** — roll a position to a new strike/expiration; premiums accumulate,
   the full roll history stays on the card, and the roll sheet says whether the new leg
   alone beats your realized average.
@@ -97,8 +98,11 @@ buy-back price = total premium × (days remaining / total span)
 ```
 
 Below that price, closing now annualizes better than holding — the general form of
-the "take profit at 50%" rule, computed from your actual dates. Every open position
-shows its own threshold.
+the "take profit at 50%" rule, computed from your actual dates.
+
+**It is not on the position cards.** Advice on every position on every look is noise,
+so the threshold is shown where it is actually being asked for: the Watchlist tab,
+next to the candidate that would replace the capital.
 
 That version assumes the freed capital does nothing. When the watchlist holds a
 candidate paying more than a position is making, the price worth paying to get out
@@ -109,9 +113,9 @@ buy-back price = premium × (remaining / span)  +  strike × altROI × (remainin
 ```
 
 Capital per share is the strike, so both terms are per share and directly comparable
-to a quoted option price. With `altROI = 0` it collapses back to the line above. Open
-position cards show the second figure whenever there is a better candidate on the
-watchlist, and the Watchlist tab ranks which positions are worth closing to fund it.
+to a quoted option price. With `altROI = 0` it collapses back to the line above. The
+Watchlist tab's **Close to fund it** table carries both figures side by side and ranks
+which positions are worth closing to fund the best candidate on the list.
 
 ## The stock behind each contract
 

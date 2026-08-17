@@ -1423,13 +1423,8 @@ function confirmDelete() {
 /* ═══════════════════════════════════════
    RENDER: ACTIVE TRADES
 ═══════════════════════════════════════ */
-// The best watchlist candidate, resolved once per render rather than once
-// per card — every open position is measured against the same alternative.
-let _altBest = null;
-
 function renderActive() {
   const d = load();
-  _altBest = bestCandidate();
   const trades = d.trades.filter(t => t.status === 'active');
   document.getElementById('active-count').textContent = trades.length + ' position' + (trades.length !== 1 ? 's' : '');
   const el = document.getElementById('active-list');
@@ -1626,26 +1621,11 @@ function tradeCardHTML(t) {
   const drVal = dr < 0 ? 'past exp' : fmtInt(dr) + 'd';
   const drCls = dr <= 5 ? ' red' : '';
 
-  // Below the breakeven buy-back price, closing now annualizes better than
-  // holding to expiry — the single most useful call a premium seller makes.
-  const be = closeEarlyBreakeven(t);
-  const hintHTML = (be.left > 0 && be.elapsed > 0) ? `
-    <div class="tc-hint${be.elapsed / be.span >= 0.5 ? ' good' : ''}">
-      Buy back at <b>${fmtMoney(be.price)}</b> or less and closing now beats holding
-      to expiry — ${fmtInt(be.elapsed)} of ${fmtInt(be.span)} days done, ${fmtInt(be.left)} left.
-    </div>` : '';
-
-  // The same call with somewhere better to put the money: when the watchlist
-  // holds a candidate clearly beating this position's rate, the price worth
-  // paying to get out rises by whatever that capital would earn there instead.
-  // Same ticker is not a rotation, and a thin edge does not cover two spreads.
-  const alt = _altBest;
-  const altHTML = (alt && be.left > 0 && tradeCapital(t) > 0
-                   && alt.ticker !== t.ticker && alt.roi >= roi * MIN_SWITCH_EDGE) ? `
-    <div class="tc-hint" style="margin-top:-4px">
-      Or up to <b>${fmtMoney(switchBreakeven(t, alt.roi).altPrice)}</b> if you roll the capital
-      into <b>${esc(alt.ticker)}</b> ${fmtMoney(alt.strike)}p at ${fmtPct(alt.roi)}.
-    </div>` : '';
+  /* No close-early or switch advice on the card. The buy-back break-even and
+     the price worth paying to rotate into a watchlist candidate are still
+     computed — the Watchlist tab's "Close to fund it" table is where they are
+     asked for, next to the candidate they are about. On the card they were
+     unasked-for advice on every position, every time. */
 
   const rollHistHTML = rolled ? `
     <div class="roll-hist">
@@ -1699,8 +1679,6 @@ function tradeCardHTML(t) {
       </div>
     </div>
     ${stockStripHTML(t, t.id)}
-    ${hintHTML}
-    ${altHTML}
     ${rollHistHTML}
     <div class="tc-actions">
       <button class="act-btn grn" onclick="openExpire('${t.id}')">Expired</button>
@@ -3079,7 +3057,7 @@ async function refreshQuotes(manual, slotLabel) {
       saveMarket(m);
     }
     renderWatchlist();
-    renderActive();          // the close-vs-switch hints move with the quotes
+    renderActive();          // the cards are marked against these quotes
     renderAnalysisIfOpen();
   }
   // Current prices are only half of the portfolio's picture; the price each
