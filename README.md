@@ -23,8 +23,9 @@ in your browser's localStorage; nothing is sent to a server.
   alone beats your realized average.
 - **Watchlist** — tickers and ETFs you are thinking about, each showing price, the
   day's move, and what a put is paying 5% and 10% out of the money at ~45 days,
-  with the annualized ROI. Refreshed five times a day, premarket to the close —
-  by the relay itself if you set one up, so the app need not be open. See below.
+  with the annualized ROI — plus 15% and 20% on any name whose 5% leg is paying over
+  50% annualized. Refreshed five times a day, premarket to the close — by the relay
+  itself if you set one up, so the app need not be open. See below.
 - **Analysis** — realized P&L, capital-weighted annualized ROI, win rate, average
   holding period, month-by-month performance with every closed position and what
   it earned, breakdowns by term written, ticker and type, and how far from the stock
@@ -214,6 +215,36 @@ alongside the watchlist itself; on a merge import, a note already on the device 
   illiquid strike can be days old.
 - **ROI** — `(365 / DTE) × (premium / strike)`, the same formula used everywhere else
   in the app, so a candidate and a position you hold are directly comparable.
+
+### Deeper strikes on a rich name
+
+Two legs are the strategy. A third and fourth appear only when the name is paying
+enough to make standing much further from the money worth quoting:
+
+> **When the 5% leg is annualizing more than 50%, the card also lists 15% and 20%
+> out of the money.**
+
+They sit under a band in the table's own header style carrying the number that put
+them there — *"5% is paying 62.40% — over 50%"* — so a card never silently changes
+shape. Everything else about the card is unchanged, and a name under the trigger looks
+exactly as it always did.
+
+The rule is a live reading, not a state. It is re-tested every refresh, when the legs
+are rebuilt from the chain, and again at render, so the two rows appear the moment the
+5% leg crosses 50% and are gone the moment it falls back — including on a quote that
+was fetched while the name was hot. Exactly 50% is not over 50%, so the trigger needs
+to be cleared, not matched.
+
+Two deliberate details. A deep strike with no quote, or none listed that far out, is
+left off rather than shown as an empty row: absence is information on a core leg and
+clutter on a bonus one. And the deep legs are ranked alongside the others for the yield
+target, sorting and the switch suggestion — in practice the 5% leg still wins, since
+further out of the money pays less, but nothing on the tab is measured against rows the
+card is not showing.
+
+Hand-entered quotes (**edit** on a card) carry the 5% and 10% legs only. There is no
+chain behind them to pick a 15% strike from, and inventing one is not what that sheet
+is for.
 
 ### Where the quotes come from
 
