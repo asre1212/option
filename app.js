@@ -2286,6 +2286,17 @@ const PROXY_KEY    = 'opts_quote_proxy';
 const TARGET_DTE   = 45;   // the term this strategy is written at
 const DTE_WINDOW   = 7;    // an expiration this far either side still counts
 const OTM_TARGETS  = [5, 10];
+/* ── Deeper strikes on a hot name ──
+   The two standard legs are the strategy; these are the exception to it. When
+   the 5% leg is paying more than this annualized, the premium on that name is
+   rich enough that standing much further from the money is still worth
+   quoting — the same money for a fraction of the assignment risk. Below the
+   trigger they are noise on every card, so they are not shown at all.
+   The rule is re-tested on every refresh and again at render, so the rows
+   appear and disappear with the number that justifies them. */
+const DEEP_OTM_TARGETS = [15, 20];
+const DEEP_OTM_TRIGGER = 50;   // annualized %, measured on the 5% leg
+const CORE_OTM         = OTM_TARGETS[0];   // the leg the trigger is read from
 const MAX_WATCH    = 40;
 const STALE_DAYS   = 4;    // beyond this a stored quote stops driving advice
 const MIN_SWITCH_EDGE = 1.25;   // a candidate must beat a position by this much to be worth the swap
@@ -2370,10 +2381,22 @@ function configureWatchTarget() {
   renderWatchlist();
 }
 
+/* Which legs a quote is currently entitled to show. The deep strikes ride on
+   the 5% leg's yield, so this is the single place that decides — the card, the
+   target check and the switch suggestion all read it, and none of them can
+   disagree about what is on the card. */
+function visibleLegs(q) {
+  const legs = (q && q.legs) || [];
+  if (!legs.some(l => DEEP_OTM_TARGETS.includes(l.pct))) return legs;
+  const core = legs.find(l => l.pct === CORE_OTM);
+  const hot  = !!core && !core.missing && core.roi > DEEP_OTM_TRIGGER;
+  return hot ? legs : legs.filter(l => !DEEP_OTM_TARGETS.includes(l.pct));
+}
+
 // The best leg on a card, which is what the target is measured against
 function bestLeg(q) {
   if (!q || !q.legs) return null;
-  return q.legs.reduce((b, l) => (!l.missing && l.roi > 0 && (!b || l.roi > b.roi)) ? l : b, null);
+  return visibleLegs(q).reduce((b, l) => (!l.missing && l.roi > 0 && (!b || l.roi > b.roi)) ? l : b, null);
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -2878,22 +2901,37 @@ function buildLegs(price, chain) {
   if (!exp) return null;
   const puts = chain.filter(o => o.expiry === exp.iso && o.strike > 0);
   if (!puts.length) return null;
-  return {
-    expiry: exp.iso, dte: exp.dte, offTarget: exp.offTarget,
-    legs: OTM_TARGETS.map(pct => {
-      const o = pickStrike(puts, price * (1 - pct / 100));
-      if (!o) return { pct, missing: 'no strike' };
-      const p = legPremium(o);
-      if (!p) return { pct, strike: o.strike, missing: 'not quoted' };
-      return {
-        pct, strike: o.strike,
-        otmPct:  (price - o.strike) / price * 100,
-        premium: p.premium, basis: p.basis,
-        oi: o.oi, expiry: exp.iso, dte: exp.dte,
-        roi: roiPct(p.premium, o.strike, exp.dte)
-      };
-    })
+
+  const legAt = pct => {
+    const o = pickStrike(puts, price * (1 - pct / 100));
+    if (!o) return { pct, missing: 'no strike' };
+    const p = legPremium(o);
+    if (!p) return { pct, strike: o.strike, missing: 'not quoted' };
+    return {
+      pct, strike: o.strike,
+      otmPct:  (price - o.strike) / price * 100,
+      premium: p.premium, basis: p.basis,
+      oi: o.oi, expiry: exp.iso, dte: exp.dte,
+      roi: roiPct(p.premium, o.strike, exp.dte)
+    };
   };
+
+  const legs = OTM_TARGETS.map(legAt);
+
+  /* A rich enough 5% leg earns the deeper strikes a place on the card. They
+     are a bonus rather than the strategy, so a deep strike that is missing or
+     unquoted is simply left off — an empty row is information on a core leg
+     and clutter on this one. Nothing is cached: the next refresh re-tests the
+     trigger and rebuilds the list, which is what makes the rows come and go. */
+  const core = legs.find(l => l.pct === CORE_OTM);
+  if (core && !core.missing && core.roi > DEEP_OTM_TRIGGER) {
+    DEEP_OTM_TARGETS.forEach(pct => {
+      const l = legAt(pct);
+      if (!l.missing && l.premium > 0) legs.push(l);
+    });
+  }
+
+  return { expiry: exp.iso, dte: exp.dte, offTarget: exp.offTarget, legs };
 }
 
 /* ── Refresh ──
@@ -3557,7 +3595,7 @@ function bestCandidate() {
     // Premarket premiums are yesterday's closes. Fine to look at, not fine to
     // price a decision to close a live position against.
     if (q.premarket) return;
-    q.legs.forEach(l => {
+    visibleLegs(q).forEach(l => {
       if (l.missing || !(l.roi > 0)) return;
       if (!best || l.roi > best.roi) best = { ...l, ticker: tk, price: q.price, expiry: q.expiry || l.expiry };
     });
@@ -3669,13 +3707,27 @@ function watchCardHTML(tk, q, note, target) {
     </div>` : `<div class="wl-chg" style="color:var(--text3)">${pending ? 'loading…' : 'no price'}</div>`;
 
   let body = '';
-  if (q?.legs?.length) {
+  const shown = visibleLegs(q);
+  if (shown.length) {
+    /* The two standard legs, then — only on a name whose 5% leg is paying more
+       than the trigger — the deeper strikes under a band in the same style as
+       the table header, so the card gains a section rather than a new
+       component. The band carries the number that put them there, because a
+       card that silently changes shape invites the question. */
+    const core = shown.find(l => l.pct === CORE_OTM);
+    const deep = shown.filter(l => DEEP_OTM_TARGETS.includes(l.pct));
     body = `<div class="wl-legs">
       <div class="wl-leg head">
         <div>OTM</div><div class="wl-leg-val">Strike</div>
         <div class="wl-leg-val">Premium</div><div class="wl-leg-val">Ann. ROI</div>
       </div>
-      ${q.legs.map(l => legRowHTML(tk, l)).join('')}
+      ${shown.filter(l => !DEEP_OTM_TARGETS.includes(l.pct)).map(l => legRowHTML(tk, l)).join('')}
+      ${deep.length ? `<div class="wl-leg head deep">
+        <div>Deeper</div>
+        <div class="wl-leg-val" style="grid-column:2/-1">${fmtInt(CORE_OTM)}% is paying ${
+          fmtPct(core.roi)} — over ${fmtInt(DEEP_OTM_TRIGGER)}%</div>
+      </div>
+      ${deep.map(l => legRowHTML(tk, l)).join('')}` : ''}
     </div>`;
   } else if (q?.price > 0) {
     body = `<div class="wl-err">No option chain for this symbol${q.error ? ` — <b>${esc(q.error)}</b>` : ''}.
