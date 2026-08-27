@@ -154,11 +154,18 @@ export. Three ways in, and each card says which one it used:
   the day's close, or a browser the history feed refuses. Clearing it lets the app try
   again.
 
-The backfill asks **once per ticker and date, ever**: trades opened together on the same
-name share one answer, and a trade that has a price is never asked about again. It runs a
-few at a time on launch and after each refresh rather than all at once, and a failure is
-remembered for a day so a delisted symbol or a blocked feed does not turn into a burst of
-requests on every load. The Analysis tab says how many trades are still missing a price
+The same three ways fill the **other end of the window** on a closed trade — the stock on
+the day it ended — which is what *The stock instead* is measured from. It is stored
+alongside as `spotAtClose`, and a window that has not ended yet is never asked about.
+
+The backfill asks **once per ticker and date, ever**, and a date is one answer to two
+questions: trades opened that day and trades that ended that day take the same daily
+close, so one fetch settles all of them and a price already stamped is never asked about
+again. Dates a contract was *written* on come first — that is a decision being made today
+with a piece missing — and end dates, which only feed the stock comparison, wait their
+turn. It runs a few at a time on launch and after each refresh rather than all at once,
+and a failure is remembered for a day so a delisted symbol or a blocked feed does not turn
+into a burst of requests on every load. The Analysis tab says how many are still missing
 and offers **fetch now**, which ignores that memory.
 
 History comes from Massive's daily aggregates when a key is in play and Yahoo's chart
@@ -437,6 +444,36 @@ actually at risk:
   gets touched more often, and this says whether it has actually been worth it on your
   own trades. Trades with no price at execution sit out of these figures rather than
   being guessed at, and the tab says how many that is.
+- **The stock instead** — see below.
+
+### The stock instead
+
+One aggregate, tallied over every closed contract: what the shares would have made
+**bought the day the contract was written and sold the day it ended**. Same ticker, same
+days — the option chose them, so there is no hindsight in the choosing, which is what
+makes it a fair thing to measure the premium against.
+
+**A hundred shares per contract**, which is what the contract itself controls, so a
+two-lot counts twice and the two P&L figures sit on the same size. It is deliberately not
+the same *capital*: a cash-secured put pledges the strike, buying the shares costs the
+spot. Both totals are shown, and the annualized figures put each return over the money it
+actually needed — which is why the dollar ranking and the annualized ranking can disagree,
+and the card says so when they do.
+
+The premium total beside it covers **exactly the same trades**, not every closed trade, so
+the two numbers are comparable rather than merely adjacent.
+
+Two things are left out on purpose:
+
+- **Open positions.** A window that has not ended has no closing price to measure to.
+- **Share lots from assignment.** They are the stock already, and their gain or loss is in
+  Total Realized P&L unchanged. An assigned contract still counts here for its own window
+  — from the day it was written to the day it was assigned — and the card says so.
+
+A trade that rolled counts once, over its whole window, the same as everywhere else in the
+app. A contract needs a stock price at **both** ends or it sits out, and the count says how
+many made it — `4 of 5 closed contracts`. Missing ends are filled in by the same backfill
+that fills the price at execution, and **fetch now** is on the card.
 
 ## Number formatting
 
@@ -532,10 +569,11 @@ to install it as an app.
 ## Development notes
 
 - No build step; edit `index.html` / `app.js` directly.
-- Trade records carry two optional fields for the stock at execution — `spotAtOpen`
-  and `spotSource` (`entry` / `close` / `manual`). Records saved before they existed
-  are valid without them and get filled in by the backfill; nothing in the app treats
-  their absence as an error.
+- Trade records carry optional fields for the stock at either end of the window —
+  `spotAtOpen` / `spotSource` at execution, and on a closed trade `spotAtClose` /
+  `spotCloseSource` at the day it ended (both sources are `entry` / `close` / `manual`).
+  Records saved before they existed are valid without them and get filled in by the
+  backfill; nothing in the app treats their absence as an error.
 - The service worker is network-first, so deploys show up on next load with a
   network connection. The in-app **Update App** button clears the cache explicitly.
 - External dependencies (Tesseract.js for OCR, SheetJS for Excel export) are

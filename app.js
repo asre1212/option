@@ -144,6 +144,9 @@ function tradeCapital(t) {
    stock and a call above it, so this makes the two read the same way despite
    pointing in opposite directions. */
 const spotAtOpen = t => (numOr0(t && t.spotAtOpen) > 0 ? numOr0(t.spotAtOpen) : null);
+/* The other end of the same window. Only closed trades have one, and it is
+   stamped the same way and from the same feed — see The stock instead. */
+const spotAtClose = t => (numOr0(t && t.spotAtClose) > 0 ? numOr0(t.spotAtClose) : null);
 
 function otmPct(type, strike, spot) {
   if (!(spot > 0) || !(strike > 0)) return null;
@@ -243,6 +246,58 @@ function weightedStats() {
   const pnl = items.reduce((s,i) => s + i.pnl, 0);
   const roi = itemsROI(items);
   return { roi, monthly: roi / 12, pnl };
+}
+
+/* ── The stock instead ──
+   Every closed contract had a name and a window. Buying the shares on the day
+   it was written and selling them on the day it ended is the trade that was
+   not made, and it is the fairest thing to measure the premium against: same
+   ticker, same days, no forecast and no hindsight in choosing them — the
+   option picked them.
+
+   A hundred shares per contract, which is what the contract itself controls,
+   so a two-lot counts twice and the two P&L figures are on the same size. It
+   is not the same capital: a cash-secured put pledges the strike, and buying
+   the shares costs the spot. Both are reported, and the annualized figures put
+   each return over the money it actually needed.
+
+   Share lots from assignment are left out on purpose — they are the stock
+   already, and their gain or loss is in Total Realized P&L unchanged. A trade
+   that rolled counts once over its whole window, the same as everywhere else.
+   Both ends have to be priced or the trade sits out; the count says how many
+   did. */
+const SHARES_PER_CONTRACT = 100;
+
+function stockOverWindow(t) {
+  if (t.status === 'active') return null;
+  const open = spotAtOpen(t), close = spotAtClose(t);
+  if (open == null || close == null) return null;
+  const shares = SHARES_PER_CONTRACT * tradeQty(t);
+  return { open, close, shares, pnl: (close - open) * shares, capital: open * shares };
+}
+
+function stockInstead(d) {
+  d = d || load();
+  const closed = d.trades.filter(t => t.status !== 'active');
+  const rows = [];
+  closed.forEach(t => {
+    const s = stockOverWindow(t);
+    if (s) rows.push({ t, ...s, days: actualDays(t), optPnL: tradePnL(t), optCapital: tradeCapital(t) });
+  });
+  const sum = (f) => rows.reduce((a, r) => a + f(r), 0);
+  const stockCapDays = sum(r => r.capital * r.days);
+  const optCapDays   = sum(r => r.optCapital * r.days);
+  return {
+    n: rows.length, of: closed.length, rows,
+    stockPnL: sum(r => r.pnl),
+    optPnL:   sum(r => r.optPnL),
+    stockROI: stockCapDays > 0 ? sum(r => r.pnl)    / stockCapDays * 365 * 100 : 0,
+    optROI:   optCapDays   > 0 ? sum(r => r.optPnL) / optCapDays   * 365 * 100 : 0,
+    stockCapital: sum(r => r.capital),
+    optCapital:   sum(r => r.optCapital),
+    wins: rows.filter(r => r.pnl > 0).length,
+    days: sum(r => r.days)
+  };
 }
 
 /* ── Decision support ──
@@ -2206,6 +2261,80 @@ function renderAnalysis() {
     }
   }
 
+  /* ── The stock instead ──
+     One aggregate, tallied over every closed trade both ends are priced for:
+     what the shares would have made bought the day each contract was written
+     and sold the day it ended. The premium total beside it covers exactly the
+     same trades, so the two numbers are comparable rather than merely adjacent
+     — a stock figure on its own answers nothing. */
+  const si = stockInstead(d);
+  if (si.of) {
+    const edge = si.optPnL - si.stockPnL;
+    html += `<div class="bt-preview-hdr">The Stock Instead</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+        <div class="stat-card">
+          <div class="stat-label">Stock Over The Same Windows</div>
+          <div class="stat-value ${si.n ? (si.stockPnL >= 0 ? 'pos' : 'neg') : 'neu'}">${
+            si.n ? fmtSigned(si.stockPnL) : '—'}</div>
+          <div class="stat-sub">${si.n
+            ? `${fmtInt(si.n)} of ${fmtInt(si.of)} closed contract${si.of === 1 ? '' : 's'} · ${fmtPct(si.stockROI)} annualized`
+            : 'no closed contract is priced at both ends yet'}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Premium On The Same Trades</div>
+          <div class="stat-value ${si.n ? (si.optPnL >= 0 ? 'pos' : 'neg') : 'neu'}">${
+            si.n ? fmtSigned(si.optPnL) : '—'}</div>
+          <div class="stat-sub">${si.n
+            ? `${fmtPct(si.optROI)} annualized`
+            : 'nothing to compare against'}</div>
+        </div>
+      </div>`;
+
+    if (si.n) {
+      /* Two different amounts of money bought these two returns — the shares
+         cost the spot, the puts pledged the strike — so the dollar line and
+         the annualized line can disagree, and saying only one of them would
+         be picking the flattering half. */
+      html += `<div class="tc-hint ${edge >= 0 ? 'good' : ''}" style="margin:0 0 10px">
+        Buying <b>${fmtInt(SHARES_PER_CONTRACT)} shares per contract</b> on the day each was
+        written and selling on the day it ended would have made
+        <b>${fmtSigned(si.stockPnL)}</b> across ${fmtInt(si.n)} closed
+        contract${si.n === 1 ? '' : 's'}, ${fmtInt(si.wins)} of ${fmtInt(si.n)} profitable.
+        The premium made <b>${fmtSigned(si.optPnL)}</b> over the same windows —
+        ${Math.abs(edge) < 0.01
+          ? 'the same, to the dollar.'
+          : `<b>${fmtMoney(Math.abs(edge))}</b> ${edge > 0 ? 'more' : 'less'}.`}
+        ${Math.abs(si.stockCapital - si.optCapital) < 1
+          ? `Both tied up <b>${fmtMoney(si.stockCapital)}</b>, so the annualized figures rank them
+             the same way the dollars do.`
+          : `The shares would have tied up <b>${fmtMoney(si.stockCapital)}</b> against the
+             <b>${fmtMoney(si.optCapital)}</b> the contracts pledged — different money for
+             different returns, which is what the annualized figures above put each of them over.${
+               (si.stockROI >= si.optROI) === (si.stockPnL >= si.optPnL) ? ''
+                 : ' On that measure the order flips: the bigger total came off the bigger commitment.'}`}
+      </div>`;
+
+      // Assignment moves the share side into a lot of its own, and that lot is
+      // already stock — counting it here as well would count it twice.
+      if (si.rows.some(r => r.t.status === 'assigned')) {
+        html += `<div class="risk-note">Assigned trades are counted here as the contract's own
+          window only. The shares they handed over live on as a lot, and their gain or loss is
+          already in Total Realized P&amp;L.</div>`;
+      }
+    }
+
+    if (si.n < si.of) {
+      html += `<div class="risk-note">
+        ${fmtInt(si.of - si.n)} of ${fmtInt(si.of)} closed contract${si.of === 1 ? '' : 's'}
+        ${si.of - si.n === 1 ? 'is' : 'are'} missing the stock price at one end or the other, so
+        ${si.of - si.n === 1 ? 'it sits' : 'they sit'} out of this total. Missing prices are
+        filled in from the daily history feed a few at a time as the app runs.
+        <button class="wl-x wl-ctl" onclick="fetchSpotsNow()">fetch now</button>
+        ${quoteProxy() ? '' : '<button class="wl-x wl-ctl" onclick="openQuoteSource()">set up a relay</button>'}
+      </div>`;
+    }
+  }
+
   /* ── What actually works ── */
   if (items.length) {
     const optionItems = items.filter(i => i.kind === 'option');
@@ -2770,37 +2899,63 @@ function noteSpotMiss(key, msg) {
   saveMarket(m);
 }
 
-// Trades still missing a price, actives first and newest first inside that —
-// the open positions are the ones a decision is being made about today.
+/* Dates a stock price is still wanted for, in the order they matter.
+   Two different wants, one answer: the day a contract was written, and — for
+   anything closed — the day it ended, which is what prices the stock over the
+   same window. The daily close on a date is the same number whichever end
+   asked for it, so one fetch settles every trade that touches that date.
+
+   A contract with no price at execution comes first: that is a decision being
+   made today with a piece missing. An end date only feeds the stock
+   comparison, which is history and can wait its turn. Newest first inside
+   each, and a date is never queued twice. */
+const newestFirst = (a, b) => (a < b ? 1 : a > b ? -1 : 0);
+
 function spotBackfillQueue(d, ignoreMisses) {
   const misses = ignoreMisses ? {} : spotMisses();
   const cut    = Date.now() - SPOT_MISS_HOURS * 3600000;
-  const want   = (d || load()).trades
-    .filter(t => spotAtOpen(t) == null && DATE_RE.test(t.dateOpened || '') && TICKER_RE.test(t.ticker || ''))
+  const today  = todayStr();
+  const trades = (d || load()).trades.filter(t => TICKER_RE.test(t.ticker || ''));
+
+  const opens = trades
+    .filter(t => spotAtOpen(t) == null && DATE_RE.test(t.dateOpened || ''))
     .sort((a, b) => (a.status === 'active' ? 0 : 1) - (b.status === 'active' ? 0 : 1)
-                 || (a.dateOpened < b.dateOpened ? 1 : a.dateOpened > b.dateOpened ? -1 : 0));
+                 || newestFirst(a.dateOpened, b.dateOpened))
+    .map(t => ({ ticker: t.ticker, date: t.dateOpened }));
+
+  // A window that has not ended has no closing price to ask for yet
+  const closes = trades
+    .filter(t => t.status !== 'active' && spotAtClose(t) == null)
+    .map(t => ({ ticker: t.ticker, date: tradeEndDate(t) }))
+    .filter(j => DATE_RE.test(j.date || '') && j.date <= today)
+    .sort((a, b) => newestFirst(a.date, b.date));
+
   const seen = {}, out = [];
-  want.forEach(t => {
-    const key  = spotMissKey(t);
+  opens.concat(closes).forEach(j => {
+    const key  = `${j.ticker}@${j.date}`;
     const miss = misses[key];
     if (seen[key] || (miss && new Date(miss.at).getTime() > cut)) return;
     seen[key] = true;
-    out.push({ key, ticker: t.ticker, date: t.dateOpened });
+    out.push({ key, ticker: j.ticker, date: j.date });
   });
   return out;
 }
 
-// Write a price onto every trade opened on that ticker that day. Returns how
-// many trades it answered for.
+// Write a price onto every trade that date answers for on that ticker — the
+// ones opened on it, and the closed ones whose window ended on it. Returns
+// how many prices it filled in.
 function stampSpot(ticker, date, price, src) {
   if (!(price > 0)) return 0;
-  const d = load();
+  const d  = load();
+  const px = Math.round(price * 10000) / 10000;
   let n = 0;
   d.trades.forEach(t => {
-    if (t.ticker === ticker && t.dateOpened === date && spotAtOpen(t) == null) {
-      t.spotAtOpen = Math.round(price * 10000) / 10000;
-      t.spotSource = src;
-      n++;
+    if (t.ticker !== ticker) return;
+    if (t.dateOpened === date && spotAtOpen(t) == null) {
+      t.spotAtOpen = px; t.spotSource = src; n++;
+    }
+    if (t.status !== 'active' && spotAtClose(t) == null && tradeEndDate(t) === date) {
+      t.spotAtClose = px; t.spotCloseSource = src; n++;
     }
   });
   if (n) save(d);
@@ -2816,11 +2971,16 @@ async function backfillSpots(manual) {
   if (!queue.length) return 0;
   _spotRunning = true;
   const gap = staggerFor(manual);
-  let filled = 0;
+  let filled = 0, fetched = 0;
   try {
-    for (let i = 0; i < queue.length; i++) {
-      if (i) await sleep(gap + Math.random() * STAGGER_JITTER);
-      const job = queue[i];
+    for (const job of queue) {
+      /* A date that is today may already be answered by a quote taken today,
+         which is the same shortcut a trade logged the same day takes. Free,
+         so it does not wait out the stagger — nothing left the device. */
+      const live = job.date === todayStr() ? spotAtEntry(job.ticker) : null;
+      if (live != null) { filled += stampSpot(job.ticker, job.date, live, 'entry'); renderActive(); continue; }
+      if (fetched) await sleep(gap + Math.random() * STAGGER_JITTER);
+      fetched++;
       try {
         filled += stampSpot(job.ticker, job.date, await fetchDailyClose(job.ticker, job.date), 'close');
       } catch (e) {
@@ -2844,12 +3004,13 @@ async function fetchSpotsNow() {
     showToast('Offline — the missing prices will be fetched once you reconnect', null, null, 4000);
     return;
   }
-  const outstanding = spotBackfillQueue(null, true).length;
-  showToast(`Fetching the stock price for ${fmtInt(Math.min(outstanding, SPOT_PER_PASS))} trade`
-    + (Math.min(outstanding, SPOT_PER_PASS) === 1 ? '' : 's') + '…', null, null, 4000);
+  // The queue is dates, not trades: one fetch can answer several at once
+  const outstanding = Math.min(spotBackfillQueue(null, true).length, SPOT_PER_PASS);
+  showToast(`Fetching the stock on ${fmtInt(outstanding)} day`
+    + (outstanding === 1 ? '' : 's') + '…', null, null, 4000);
   const n = await backfillSpots(true);
   showToast(n
-    ? `Filled in ${fmtInt(n)} price${n === 1 ? '' : 's'} at execution`
+    ? `Filled in ${fmtInt(n)} stock price${n === 1 ? '' : 's'}`
     : 'No prices came back — the history feed is refusing this browser. A relay is the way through.',
     null, null, 6000);
 }
@@ -4045,7 +4206,7 @@ async function exportExcel() {
     .filter(t => t.status !== 'active')
     .sort((a,b) => new Date(b.closeInfo?.dateClosed||b.dateOpened) - new Date(a.closeInfo?.dateClosed||a.dateOpened));
   const histRows = [
-    ['Ticker','Type','Strike','Qty','Total Premium','Buy Price','P&L ($)','Ann. ROI (%)','Days Open','Status','Date Opened','Date Closed','Rolls','Stock at Open','Opened OTM (%)']
+    ['Ticker','Type','Strike','Qty','Total Premium','Buy Price','P&L ($)','Ann. ROI (%)','Days Open','Status','Date Opened','Date Closed','Rolls','Stock at Open','Opened OTM (%)','Stock at Close','Stock P&L ($)']
   ];
   closed.forEach(t => {
     const tp    = totalPremiums(t);
@@ -4054,6 +4215,7 @@ async function exportExcel() {
     const pnl   = tradePnL(t);
     const profPS = t.status === 'expired' ? tp : tp - (t.closeInfo?.buyingPrice || 0);
     const roi   = roiPct(profPS, cs, ad);
+    const stk   = stockOverWindow(t);
     histRows.push([
       t.ticker,
       t.type.toUpperCase(),
@@ -4069,15 +4231,19 @@ async function exportExcel() {
       t.closeInfo?.dateClosed || '—',
       t.rolls.length,
       spotAtOpen(t) != null ? +spotAtOpen(t).toFixed(2) : '—',
-      openedOtmPct(t) != null ? +openedOtmPct(t).toFixed(2) : '—'
+      openedOtmPct(t) != null ? +openedOtmPct(t).toFixed(2) : '—',
+      // The other end of the window, and what the shares would have made over it —
+      // the per-trade rows behind the aggregate on the Analysis tab
+      spotAtClose(t) != null ? +spotAtClose(t).toFixed(2) : '—',
+      stk ? +stk.pnl.toFixed(2) : '—'
     ]);
   });
   const ws2 = XLSX.utils.aoa_to_sheet(histRows);
-  ws2['!cols'] = colW([8,6,9,5,14,10,10,13,11,12,12,12,6,13,14]);
-  // Strike, Qty, Total Premium, Buy Price, P&L, ROI, Days Open, Rolls, the stock at open
+  ws2['!cols'] = colW([8,6,9,5,14,10,10,13,11,12,12,12,6,13,14,13,13]);
+  // Strike, Qty, Total Premium, Buy Price, P&L, ROI, Days Open, Rolls, both ends of the stock
   applyNumberFormats(ws2, histRows.length - 1,
     { 2: XL_MONEY, 3: XL_INT, 4: XL_MONEY, 5: XL_MONEY, 6: XL_MONEY, 7: XL_PCT, 8: XL_INT, 12: XL_INT,
-      13: XL_MONEY, 14: XL_PCT });
+      13: XL_MONEY, 14: XL_PCT, 15: XL_MONEY, 16: XL_MONEY });
   styleHeaderRow(ws2, histRows[0].length);
   XLSX.utils.book_append_sheet(wb, ws2, 'Trade History');
 
@@ -4442,6 +4608,12 @@ function normalizeTrade(raw) {
     ...(num(raw.spotAtOpen) > 0 ? {
       spotAtOpen: num(raw.spotAtOpen),
       spotSource: SPOT_SRC_LABEL[raw.spotSource] ? raw.spotSource : 'manual'
+    } : {}),
+    // The far end of the window, for the stock comparison. Only meaningful on
+    // a closed trade, and dropped rather than carried onto an active one.
+    ...(num(raw.spotAtClose) > 0 && status !== 'active' ? {
+      spotAtClose: num(raw.spotAtClose),
+      spotCloseSource: SPOT_SRC_LABEL[raw.spotCloseSource] ? raw.spotCloseSource : 'manual'
     } : {}),
     ...(typeof raw.positionId === 'string' ? { positionId: raw.positionId } : {})
   };
