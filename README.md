@@ -453,27 +453,55 @@ One aggregate, tallied over every closed contract: what the shares would have ma
 days — the option chose them, so there is no hindsight in the choosing, which is what
 makes it a fair thing to measure the premium against.
 
-**A hundred shares per contract**, which is what the contract itself controls, so a
-two-lot counts twice and the two P&L figures sit on the same size. It is deliberately not
-the same *capital*: a cash-secured put pledges the strike, buying the shares costs the
-spot. Both totals are shown, and the annualized figures put each return over the money it
-actually needed — which is why the dollar ranking and the annualized ranking can disagree,
-and the card says so when they do.
+**Sized by Reg T initial margin, not by the contract's 100 shares.** The share count is
+what the contract controls, but it is not what it cost. Selling one 45-day put on a $200
+stock ties up a few thousand dollars, not twenty — so buying 100 shares to compare against
+would be measuring a much larger position and calling the difference strategy. The shares
+bought are the margin divided by that day's price, fractional, because rounding to whole
+shares on a small requirement would bias the total.
 
-The premium total beside it covers **exactly the same trades**, not every closed trade, so
-the two numbers are comparable rather than merely adjacent.
+Both returns are then annualized over the same capital-days, so the dollar ranking and the
+annualized ranking cannot disagree. The premium total beside it covers **exactly the same
+trades**, not every closed trade.
 
-Two things are left out on purpose:
+Three things are left out on purpose, and the card says which is which:
 
 - **Open positions.** A window that has not ended has no closing price to measure to.
+- **Covered calls.** A call written against shares you already hold needs no margin of its
+  own, so there was never any capital to have put into stock instead. This is not a gap a
+  price could fill, so it is reported separately from the contracts still unpriced.
 - **Share lots from assignment.** They are the stock already, and their gain or loss is in
   Total Realized P&L unchanged. An assigned contract still counts here for its own window
-  — from the day it was written to the day it was assigned — and the card says so.
+  — from the day it was written to the day it was assigned.
 
 A trade that rolled counts once, over its whole window, the same as everywhere else in the
 app. A contract needs a stock price at **both** ends or it sits out, and the count says how
 many made it — `4 of 5 closed contracts`. Missing ends are filled in by the same backfill
 that fills the price at execution, and **fetch now** is on the card.
+
+#### The margin figure
+
+Per share, the Reg T / CBOE minimum on an uncovered equity option is the **greater** of:
+
+| | |
+|---|---|
+| premium + 20% of the stock − however far out of the money it is | the usual binding leg |
+| premium + 10% of (a put's strike, or a call's stock price) | the floor, which catches a far out-of-the-money contract where the first leg falls to nothing |
+
+times 100 a contract. It is taken **at execution** — the strike and premium the contract
+was written at, against that day's price — which is what *initial* means, and it matches
+how the distance-at-open figures read a trade. A roll is a later decision at a later price;
+re-margining it here would quietly turn one number into two.
+
+Two caveats the card states outright: this is the regulatory minimum, and a broker's house
+requirement is usually higher and varies by firm and by name, so read it as the least the
+position could have cost to carry. And a return measured over margin is **not** the
+cash-secured basis the figures at the top of the tab use — the same trade will show a much
+higher percentage here.
+
+The Excel export's Trade History sheet carries the inputs — the stock at either end, the
+Reg T margin, the shares it bought and what they made — so the aggregate on screen
+reconciles against its own rows.
 
 ## Number formatting
 

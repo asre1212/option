@@ -248,32 +248,81 @@ function weightedStats() {
   return { roi, monthly: roi / 12, pnl };
 }
 
+/* ── Reg T initial margin on a short option ──
+   What a broker actually posts against an uncovered equity option the moment
+   it is written. Per share, the standard requirement is the greater of
+
+     premium + 20% of the stock − however far out of the money it is
+     premium + 10% of (a put's strike, or a call's stock price)
+
+   and the second is what catches a far out-of-the-money contract, where the
+   first can fall to nothing or below. Times 100 a contract.
+
+   This is the Reg T / CBOE minimum. A broker's house requirement is usually
+   higher and varies by firm and by name, so treat this as the floor of what
+   the position cost to carry rather than a quote of your own statement.
+
+   Measured at execution, from the strike and premium the contract was written
+   at against that day's price — that is what "initial" means, and it matches
+   how openedOtmPct() reads a trade. A roll is a later decision at a later
+   price, and re-margining it here would quietly turn one number into two. */
+const REGT_STOCK_PCT = 0.20;   // of the underlying, less what is out of the money
+const REGT_FLOOR_PCT = 0.10;   // of the strike (puts) or the underlying (calls)
+
+function regTPerShare(type, strike, spot, premium) {
+  if (!(spot > 0) || !(strike > 0)) return null;
+  const otm   = Math.max(0, type === 'call' ? strike - spot : spot - strike);
+  const base  = premium + REGT_STOCK_PCT * spot - otm;
+  const floor = premium + REGT_FLOOR_PCT * (type === 'call' ? spot : strike);
+  return Math.max(base, floor);
+}
+
+// Dollars of Reg T initial margin the whole position required, or null where
+// there is no requirement to speak of.
+function regTMargin(t) {
+  // A call written against shares already held is covered: it needs no margin
+  // of its own, so there was never any capital to have put into stock instead.
+  if (t.type === 'call' && t.positionId) return null;
+  const spot = spotAtOpen(t);
+  if (spot == null) return null;
+  const per = regTPerShare(t.type, numOr0(t.strikePrice), spot, numOr0(t.premium));
+  return per > 0 ? per * 100 * tradeQty(t) : null;
+}
+
 /* ── The stock instead ──
-   Every closed contract had a name and a window. Buying the shares on the day
-   it was written and selling them on the day it ended is the trade that was
+   Every closed contract had a name, a window, and an amount of money it tied
+   up. Putting that same money into the stock on the day the contract was
+   written and selling it on the day the contract ended is the trade that was
    not made, and it is the fairest thing to measure the premium against: same
-   ticker, same days, no forecast and no hindsight in choosing them — the
-   option picked them.
+   ticker, same days, same capital, and no hindsight in choosing any of them —
+   the option chose them.
 
-   A hundred shares per contract, which is what the contract itself controls,
-   so a two-lot counts twice and the two P&L figures are on the same size. It
-   is not the same capital: a cash-secured put pledges the strike, and buying
-   the shares costs the spot. Both are reported, and the annualized figures put
-   each return over the money it actually needed.
+   Sized by Reg T initial margin, not by the contract's 100 shares. The share
+   count is what the contract controls, but it is not what it cost: selling one
+   45-day put on a $200 stock ties up a few thousand dollars, not twenty. Buying
+   100 shares to compare against would be measuring a much larger position and
+   calling the difference strategy. So the shares bought are the margin divided
+   by that day's price — fractional, because rounding to whole shares on a small
+   requirement would bias the total.
 
-   Share lots from assignment are left out on purpose — they are the stock
+   Both returns are then annualized over the same capital-days, so the dollar
+   ranking and the annualized ranking cannot disagree. Note this is return on
+   margin, which is not the cash-secured basis the figures at the top of the
+   tab use — the card says so.
+
+   Share lots from assignment are left out on purpose: they are the stock
    already, and their gain or loss is in Total Realized P&L unchanged. A trade
    that rolled counts once over its whole window, the same as everywhere else.
    Both ends have to be priced or the trade sits out; the count says how many
    did. */
-const SHARES_PER_CONTRACT = 100;
-
 function stockOverWindow(t) {
   if (t.status === 'active') return null;
   const open = spotAtOpen(t), close = spotAtClose(t);
   if (open == null || close == null) return null;
-  const shares = SHARES_PER_CONTRACT * tradeQty(t);
-  return { open, close, shares, pnl: (close - open) * shares, capital: open * shares };
+  const margin = regTMargin(t);
+  if (margin == null) return null;
+  const shares = margin / open;
+  return { open, close, margin, shares, pnl: (close - open) * shares, capital: margin };
 }
 
 function stockInstead(d) {
@@ -282,21 +331,27 @@ function stockInstead(d) {
   const rows = [];
   closed.forEach(t => {
     const s = stockOverWindow(t);
-    if (s) rows.push({ t, ...s, days: actualDays(t), optPnL: tradePnL(t), optCapital: tradeCapital(t) });
+    if (s) rows.push({ t, ...s, days: actualDays(t), optPnL: tradePnL(t) });
   });
-  const sum = (f) => rows.reduce((a, r) => a + f(r), 0);
-  const stockCapDays = sum(r => r.capital * r.days);
-  const optCapDays   = sum(r => r.optCapital * r.days);
+  const sum = f => rows.reduce((a, r) => a + f(r), 0);
+  // One pool of capital-days for both sides: the same margin carried for the
+  // same days bought both returns, so there is only one denominator.
+  const capDays  = sum(r => r.margin * r.days);
+  const annual   = pnl => (capDays > 0 ? pnl / capDays * 365 * 100 : 0);
+  const stockPnL = sum(r => r.pnl);
+  const optPnL   = sum(r => r.optPnL);
   return {
     n: rows.length, of: closed.length, rows,
-    stockPnL: sum(r => r.pnl),
-    optPnL:   sum(r => r.optPnL),
-    stockROI: stockCapDays > 0 ? sum(r => r.pnl)    / stockCapDays * 365 * 100 : 0,
-    optROI:   optCapDays   > 0 ? sum(r => r.optPnL) / optCapDays   * 365 * 100 : 0,
-    stockCapital: sum(r => r.capital),
-    optCapital:   sum(r => r.optCapital),
-    wins: rows.filter(r => r.pnl > 0).length,
-    days: sum(r => r.days)
+    stockPnL, optPnL,
+    stockROI: annual(stockPnL),
+    optROI:   annual(optPnL),
+    margin:   sum(r => r.margin),
+    shares:   sum(r => r.shares),
+    wins:     rows.filter(r => r.pnl > 0).length,
+    days:     sum(r => r.days),
+    // Covered calls have no requirement of their own, so they are not a gap a
+    // price could fill — worth saying apart from the ones still unpriced.
+    covered:  closed.filter(t => t.type === 'call' && t.positionId).length
   };
 }
 
@@ -2273,11 +2328,11 @@ function renderAnalysis() {
     html += `<div class="bt-preview-hdr">The Stock Instead</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
         <div class="stat-card">
-          <div class="stat-label">Stock Over The Same Windows</div>
+          <div class="stat-label">Stock On The Same Margin</div>
           <div class="stat-value ${si.n ? (si.stockPnL >= 0 ? 'pos' : 'neg') : 'neu'}">${
             si.n ? fmtSigned(si.stockPnL) : '—'}</div>
           <div class="stat-sub">${si.n
-            ? `${fmtInt(si.n)} of ${fmtInt(si.of)} closed contract${si.of === 1 ? '' : 's'} · ${fmtPct(si.stockROI)} annualized`
+            ? `${fmtInt(si.n)} of ${fmtInt(si.of)} closed contract${si.of === 1 ? '' : 's'} · ${fmtPct(si.stockROI)} on margin`
             : 'no closed contract is priced at both ends yet'}</div>
         </div>
         <div class="stat-card">
@@ -2285,33 +2340,37 @@ function renderAnalysis() {
           <div class="stat-value ${si.n ? (si.optPnL >= 0 ? 'pos' : 'neg') : 'neu'}">${
             si.n ? fmtSigned(si.optPnL) : '—'}</div>
           <div class="stat-sub">${si.n
-            ? `${fmtPct(si.optROI)} annualized`
+            ? `${fmtPct(si.optROI)} on margin · ${fmtMoney(si.margin)} posted`
             : 'nothing to compare against'}</div>
         </div>
       </div>`;
 
     if (si.n) {
-      /* Two different amounts of money bought these two returns — the shares
-         cost the spot, the puts pledged the strike — so the dollar line and
-         the annualized line can disagree, and saying only one of them would
-         be picking the flattering half. */
+      /* Same money, same days, so the dollar line and the annualized line
+         cannot disagree — which is the whole reason for sizing by margin
+         rather than by the contract's 100 shares. */
       html += `<div class="tc-hint ${edge >= 0 ? 'good' : ''}" style="margin:0 0 10px">
-        Buying <b>${fmtInt(SHARES_PER_CONTRACT)} shares per contract</b> on the day each was
-        written and selling on the day it ended would have made
-        <b>${fmtSigned(si.stockPnL)}</b> across ${fmtInt(si.n)} closed
-        contract${si.n === 1 ? '' : 's'}, ${fmtInt(si.wins)} of ${fmtInt(si.n)} profitable.
-        The premium made <b>${fmtSigned(si.optPnL)}</b> over the same windows —
-        ${Math.abs(edge) < 0.01
-          ? 'the same, to the dollar.'
+        Writing ${fmtInt(si.n)} closed contract${si.n === 1 ? '' : 's'} tied up
+        <b>${fmtMoney(si.margin)}</b> of Reg T initial margin. The same money in the stock,
+        bought the day each was written and sold the day it ended, would have made
+        <b>${fmtSigned(si.stockPnL)}</b> — ${fmtInt(si.wins)} of ${fmtInt(si.n)} profitable.
+        The premium made <b>${fmtSigned(si.optPnL)}</b> over the same windows on the same
+        capital, ${Math.abs(edge) < 0.01
+          ? 'the same to the dollar.'
           : `<b>${fmtMoney(Math.abs(edge))}</b> ${edge > 0 ? 'more' : 'less'}.`}
-        ${Math.abs(si.stockCapital - si.optCapital) < 1
-          ? `Both tied up <b>${fmtMoney(si.stockCapital)}</b>, so the annualized figures rank them
-             the same way the dollars do.`
-          : `The shares would have tied up <b>${fmtMoney(si.stockCapital)}</b> against the
-             <b>${fmtMoney(si.optCapital)}</b> the contracts pledged — different money for
-             different returns, which is what the annualized figures above put each of them over.${
-               (si.stockROI >= si.optROI) === (si.stockPnL >= si.optPnL) ? ''
-                 : ' On that measure the order flips: the bigger total came off the bigger commitment.'}`}
+      </div>`;
+
+      /* Two things this number is not, and both would mislead if left unsaid:
+         it is the regulatory minimum rather than what any particular broker
+         charges, and a return measured over it is not the cash-secured return
+         the rest of the tab reports. */
+      html += `<div class="risk-note">
+        Margin is the Reg T minimum — the greater of ${fmtInt(REGT_STOCK_PCT * 100)}% of the stock
+        less what was out of the money, and ${fmtInt(REGT_FLOOR_PCT * 100)}% of the strike, plus the
+        premium either way — taken the day each contract was written. A broker's house requirement
+        is usually higher, so read this as the least the position could have cost to carry. Both
+        annualized figures are returns on that margin, not on the cash-secured basis the numbers
+        at the top of this tab use.
       </div>`;
 
       // Assignment moves the share side into a lot of its own, and that lot is
@@ -2323,11 +2382,22 @@ function renderAnalysis() {
       }
     }
 
-    if (si.n < si.of) {
+    /* Two different reasons a closed contract is not in the total, and only
+       one of them is a gap worth offering to close. */
+    const unpriced = si.of - si.n - si.covered;
+    if (si.covered) {
       html += `<div class="risk-note">
-        ${fmtInt(si.of - si.n)} of ${fmtInt(si.of)} closed contract${si.of === 1 ? '' : 's'}
-        ${si.of - si.n === 1 ? 'is' : 'are'} missing the stock price at one end or the other, so
-        ${si.of - si.n === 1 ? 'it sits' : 'they sit'} out of this total. Missing prices are
+        ${fmtInt(si.covered)} covered call${si.covered === 1 ? '' : 's'}
+        ${si.covered === 1 ? 'is' : 'are'} left out: a call written against shares you already
+        hold needs no margin of its own, so there was never any capital to have put into stock
+        instead.
+      </div>`;
+    }
+    if (unpriced > 0) {
+      html += `<div class="risk-note">
+        ${fmtInt(unpriced)} closed contract${unpriced === 1 ? '' : 's'}
+        ${unpriced === 1 ? 'is' : 'are'} missing the stock price at one end or the other, so
+        ${unpriced === 1 ? 'it sits' : 'they sit'} out of this total. Missing prices are
         filled in from the daily history feed a few at a time as the app runs.
         <button class="wl-x wl-ctl" onclick="fetchSpotsNow()">fetch now</button>
         ${quoteProxy() ? '' : '<button class="wl-x wl-ctl" onclick="openQuoteSource()">set up a relay</button>'}
@@ -4206,7 +4276,7 @@ async function exportExcel() {
     .filter(t => t.status !== 'active')
     .sort((a,b) => new Date(b.closeInfo?.dateClosed||b.dateOpened) - new Date(a.closeInfo?.dateClosed||a.dateOpened));
   const histRows = [
-    ['Ticker','Type','Strike','Qty','Total Premium','Buy Price','P&L ($)','Ann. ROI (%)','Days Open','Status','Date Opened','Date Closed','Rolls','Stock at Open','Opened OTM (%)','Stock at Close','Stock P&L ($)']
+    ['Ticker','Type','Strike','Qty','Total Premium','Buy Price','P&L ($)','Ann. ROI (%)','Days Open','Status','Date Opened','Date Closed','Rolls','Stock at Open','Opened OTM (%)','Stock at Close','Reg T Margin','Shares Instead','Stock P&L ($)']
   ];
   closed.forEach(t => {
     const tp    = totalPremiums(t);
@@ -4235,15 +4305,20 @@ async function exportExcel() {
       // The other end of the window, and what the shares would have made over it —
       // the per-trade rows behind the aggregate on the Analysis tab
       spotAtClose(t) != null ? +spotAtClose(t).toFixed(2) : '—',
-      stk ? +stk.pnl.toFixed(2) : '—'
+      // The margin that sized the stock alternative, the shares it bought, and
+      // what they made — the rows behind the aggregate on the Analysis tab
+      stk ? +stk.margin.toFixed(2) : '—',
+      stk ? +stk.shares.toFixed(4) : '—',
+      stk ? +stk.pnl.toFixed(2)    : '—'
     ]);
   });
   const ws2 = XLSX.utils.aoa_to_sheet(histRows);
-  ws2['!cols'] = colW([8,6,9,5,14,10,10,13,11,12,12,12,6,13,14,13,13]);
-  // Strike, Qty, Total Premium, Buy Price, P&L, ROI, Days Open, Rolls, both ends of the stock
+  ws2['!cols'] = colW([8,6,9,5,14,10,10,13,11,12,12,12,6,13,14,13,13,14,13]);
+  // Strike, Qty, Total Premium, Buy Price, P&L, ROI, Days Open, Rolls, the stock either
+  // end, the margin that sized the alternative and what it made
   applyNumberFormats(ws2, histRows.length - 1,
     { 2: XL_MONEY, 3: XL_INT, 4: XL_MONEY, 5: XL_MONEY, 6: XL_MONEY, 7: XL_PCT, 8: XL_INT, 12: XL_INT,
-      13: XL_MONEY, 14: XL_PCT, 15: XL_MONEY, 16: XL_MONEY });
+      13: XL_MONEY, 14: XL_PCT, 15: XL_MONEY, 16: XL_MONEY, 18: XL_MONEY });
   styleHeaderRow(ws2, histRows[0].length);
   XLSX.utils.book_append_sheet(wb, ws2, 'Trade History');
 
