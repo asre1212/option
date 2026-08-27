@@ -359,9 +359,25 @@ implementation of the maths rather than two that can drift apart.
 
 The cron fires every five minutes across the hours covering the session, and the Worker
 checks the real Eastern time to decide whether a slot is due — one trigger rather than a
-pair for each daylight-saving offset. Once the relay has answered for anything on the list
-its answer stands, including its errors: re-asking the feeds directly would only bury a
-useful message like `HTTP 429` under the CORS failures that led to using a relay at all.
+pair for each daylight-saving offset. The slot is claimed before the collection starts,
+not after it finishes: a collection runs for longer than five minutes, so an unclaimed
+slot would have the next firing start a second pass over the same tickers alongside the
+first.
+
+**The relay's answer stands only where it is new.** Per ticker, and measured against what
+the app already has: a price or an error the app has not seen before is the answer, and
+re-asking the feeds directly would only bury a useful message like `HTTP 429` under the
+CORS failures that led to using a relay at all. Anything the snapshot did not move — a
+relay that has stopped collecting keeps serving the last snapshot it wrote, hour after
+hour — is fetched directly instead. Without that test a stalled relay reads as a
+successful refresh, retires the slot and leaves the watchlist frozen on old prices.
+
+A Cron Trigger is stopped at fifteen minutes, so a collection stops at twelve and writes
+its snapshot as it goes rather than only at the end. Whatever it does not reach keeps its
+earlier timestamp, which puts it first in the next slot's run — and the app fetches it
+directly in the meantime. The 26-second pause between symbols is Massive's rate limit, so
+it applies only when `MASSIVE_KEY` is set; without a key the collection is Cboe's CDN at
+one request per ticker and moves at a polite 1.5 seconds.
 
 All of it is optional. With no KV namespace bound the Worker is still a plain relay, and
 the app goes back to fetching for itself.
@@ -377,6 +393,18 @@ after its slot time, so two devices running this do not hit the same feed on the
 second, and symbols are fetched one at a time with a 9–12 second gap between them.
 A manual **Refresh** uses a short gap instead, and a feed answering 429 backs the
 whole ticker off once before the remaining providers are tried.
+
+**Whatever has waited longest goes first.** A run is minutes long and the phone is
+usually put away before it finishes — the timers stop with it — so starting at the top
+of the list every time would refresh the same few names for ever while everything below
+them aged. Watched names still lead, as they do in the request the relay is sent; the age
+only decides the order within the watched names and within the held-only ones, so a run
+cut short spends what it has on the watchlist.
+
+A run that reaches nothing at all leaves its slot due, but waits ten minutes before
+trying again. Retrying every minute for the rest of the day is how an outage turns into
+a rate limit, and a rate limit is indistinguishable from prices that never update.
+Reconnecting clears that wait, since regaining a network is new information.
 
 ## Analysis
 
