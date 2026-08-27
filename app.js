@@ -3010,48 +3010,109 @@ function syncWatchlistToRelay() {
         { cache: 'no-store', mode: 'cors' }).catch(() => {});
 }
 
-/* Returns both how many quotes landed and how many watched tickers the
-   snapshot had anything to say about. The second is what decides whether the
-   relay has spoken: if it reports a rate limit or a bad symbol, that is the
-   answer, and re-asking the feeds directly would only bury a useful message
-   under the CORS failures that sent us to a relay in the first place. */
+/* When a stored quote was last told anything — a price or a failure. This is
+   what "newer" is measured against, so a feed that only ever errors still
+   counts as having answered. */
+function quoteStamp(q) {
+  const t = [q?.asOf, q?.errorAt]
+    .map(s => (s ? new Date(s).getTime() : NaN))
+    .filter(n => isFinite(n));
+  return t.length ? Math.max(...t) : null;
+}
+
+/* A relay that has stopped collecting does not stop answering: it keeps
+   serving the last snapshot it managed to write, hour after hour. Applied
+   blindly that reads as a successful refresh — the slot is retired, the run
+   is recorded, and the watchlist sits on prices from some earlier day for
+   ever. So a snapshot entry only counts where it is genuinely newer than what
+   is already stored; an undated one cannot show that it is, and is refused.
+   Anything the snapshot could not speak to is left for the direct walk. */
+function snapIsNewer(prev, stamp) {
+  const at = stamp ? new Date(stamp).getTime() : NaN;
+  if (!isFinite(at)) return false;
+  const had = quoteStamp(prev);
+  return had == null || at > had;
+}
+
+/* Returns how many quotes landed, how many watched tickers the snapshot had
+   anything new to say about, and which ones those were. The last is what
+   decides who still needs asking directly: where the relay has spoken — a
+   price, a rate limit, a bad symbol — that is the answer, and re-asking the
+   feeds would only bury a useful message under the CORS failures that sent us
+   to a relay in the first place. Where it has not, the ticker is still ours
+   to fetch, so a half-collected snapshot no longer strands the other half. */
 function applySnapshot(snap) {
   const watching = quoteTickers();
   const m = loadMarket();
   m.quotes = m.quotes || {};
-  let n = 0, seen = 0;
+  let n = 0;
+  const covered = new Set();
   Object.entries(snap?.quotes || {}).forEach(([tk, raw]) => {
     if (!watching.includes(tk) || !raw) return;
+    const prev = m.quotes[tk] || null;
     if (!raw.chain?.length) {
-      if (raw.error) {
-        m.quotes[tk] = { ...(m.quotes[tk] || { ticker: tk }), error: raw.error, errorAt: raw.errorAt };
-        seen++;
+      if (raw.error && snapIsNewer(prev, raw.errorAt || snap?.updated)) {
+        m.quotes[tk] = { ...(prev || { ticker: tk }), error: raw.error, errorAt: raw.errorAt };
+        covered.add(tk);
       }
       return;
     }
+    const stamp = raw.asOf || snap?.updated;
+    if (!snapIsNewer(prev, stamp)) return;
     const legs = buildLegs(raw.price, raw.chain);
     m.quotes[tk] = {
       ticker: tk, price: raw.price, prevClose: raw.prevClose ?? null,
       changePct: raw.changePct ?? null,
-      source: raw.source || 'relay', asOf: raw.asOf || snap.updated || new Date().toISOString(),
+      source: raw.source || 'relay', asOf: stamp,
       premarket: !!(raw.premarket ?? snap.premarket),
       expiry: legs?.expiry || null, dte: legs?.dte || null,
       offTarget: !!legs?.offTarget, legs: legs?.legs || null,
       error: legs ? null : 'no usable contracts in the snapshot'
     };
-    n++; seen++;
+    n++; covered.add(tk);
   });
-  if (seen) { if (n) m.lastRun = snap.updated || new Date().toISOString(); saveMarket(m); }
-  return { fresh: n, seen };
+  if (covered.size) { if (n) m.lastRun = snap.updated || new Date().toISOString(); saveMarket(m); }
+  return { fresh: n, covered };
 }
 
 async function pullSnapshot() {
   const base = relayBase();
-  if (!base) return { fresh: 0, seen: 0 };
+  if (!base) return { fresh: 0, covered: new Set() };
   try {
     // Straight to the relay, not through it — this is its own endpoint
     return applySnapshot(await fetchJSON(`${base}/snapshot`, false));
-  } catch (e) { return { fresh: 0, seen: 0 }; }
+  } catch (e) { return { fresh: 0, covered: new Set() }; }
+}
+
+/* Oldest first.
+   A scheduled walk is minutes long and the app is usually put away before it
+   finishes — on a phone the timers stop with it, and the run resumes only if
+   the page is still alive when you come back. Starting at the top of the list
+   every time would then refresh the same handful of names for ever while
+   everything below them quietly ages. Whatever has waited longest goes first,
+   so successive runs cover the whole list instead of retreading its head. A
+   ticker with no quote at all has waited longest of any.
+
+   Watched names still lead, as they do in quoteTickers(): they are the ones
+   the yield target notifies on. The age only decides the order inside each
+   group, so a truncated run spends what it has on the watchlist first. */
+function refreshOrder(list) {
+  const quotes  = marketQuotes();
+  const watched = loadWatchlist();
+  const rank = a => [
+    watched.includes(a.tk) ? 0 : 1,
+    a.at == null ? 0 : 1,        // never quoted has waited longest of all
+    a.at == null ? 0 : a.at,
+    a.i
+  ];
+  return list
+    .map((tk, i) => ({ tk, i, at: quoteStamp(quotes[tk]) }))
+    .sort((a, b) => {
+      const ra = rank(a), rb = rank(b);
+      for (let k = 0; k < ra.length; k++) if (ra[k] !== rb[k]) return ra[k] - rb[k];
+      return 0;
+    })
+    .map(x => x.tk);
 }
 
 // Refreshes every ticker the app needs a price for — watched and held alike.
@@ -3063,45 +3124,57 @@ async function refreshQuotes(manual, slotLabel) {
     if (manual) showToast('Offline — showing the last prices fetched', null, null, 4000);
     return 0;
   }
+
+  /* Everything from here is inside the finally, because the one thing worse
+     than a refresh that fails is a refresh that never lets another one start:
+     _wlRunning also disables the Refresh button and turns away the scheduler,
+     so leaking it true is a watchlist frozen until the page is reloaded. */
   _wlRunning = true;
-  renderWatchlist();
-
-  // A collecting relay makes the whole per-ticker walk unnecessary. Once it
-  // has answered for anything on the list, its answer stands.
-  const snap = await pullSnapshot();
-  if (snap.seen) {
-    _wlRunning = false;
-    if (slotLabel) { const mm = loadMarket(); mm.lastSlot = slotLabel; saveMarket(mm); }
-    renderWatchlist(); renderActive(); renderAnalysisIfOpen();
-    backfillSpots(manual);
-    return snap.fresh;
-  }
-
-  const gap = staggerFor(manual);
   let fresh = 0;
   try {
-    for (let i = 0; i < list.length; i++) {
+    renderWatchlist();
+
+    // A collecting relay spares the per-ticker walk for everything it has
+    // spoken about. Whatever it left out is still ours to fetch.
+    const snap = await pullSnapshot();
+    fresh = snap.fresh;
+    const todo = refreshOrder(list.filter(tk => !snap.covered.has(tk)));
+    if (!todo.length) {
+      if (slotLabel) { const mm = loadMarket(); mm.lastSlot = slotLabel; saveMarket(mm); }
+      return fresh;
+    }
+
+    const gap = staggerFor(manual);
+    let walked = 0;
+    for (let i = 0; i < todo.length; i++) {
       if (i) await sleep(gap + Math.random() * STAGGER_JITTER);
-      if (await refreshOne(list[i])) fresh++;
+      if (await refreshOne(todo[i])) walked++;
+      fresh = snap.fresh + walked;
       renderWatchlist();
       renderActive();        // held tickers are on this list too
     }
-  } finally {
-    _wlRunning = false;
-    if (fresh) {
+    // Only a quote fetched here restamps the run: what the relay collected is
+    // already stamped with the time it actually collected it.
+    if (walked) {
       const m = loadMarket();
       m.lastRun = new Date().toISOString();
       if (slotLabel) m.lastSlot = slotLabel;
       saveMarket(m);
+    } else if (fresh && slotLabel) {
+      const m = loadMarket();
+      m.lastSlot = slotLabel;
+      saveMarket(m);
     }
+    return fresh;
+  } finally {
+    _wlRunning = false;
     renderWatchlist();
     renderActive();          // the cards are marked against these quotes
     renderAnalysisIfOpen();
+    // Current prices are only half of the portfolio's picture; the price each
+    // contract was written at is the other, and it comes from a different feed.
+    backfillSpots(manual);
   }
-  // Current prices are only half of the portfolio's picture; the price each
-  // contract was written at is the other, and it comes from a different feed.
-  backfillSpots(manual);
-  return fresh;
 }
 
 // The analysis tab reads the same quotes, but re-rendering it while it is not
@@ -3223,16 +3296,36 @@ async function notifyTargetHits() {
   } catch (e) { /* a missed notification is not worth breaking the run over */ }
 }
 
+/* A slot that reached nothing stays due, and the tick that finds it comes
+   round every minute. Without a gap between attempts an outage has the app
+   starting a fresh walk the moment the last one gives up, all day — which is
+   itself a good way to be rate limited, and being rate limited looks exactly
+   like prices that never update. So a failed attempt waits before the next. */
+const RETRY_GAP_MIN = 10;
+
+function attemptAllowed() {
+  const store = loadMarket();
+  const last  = store.lastAttempt ? new Date(store.lastAttempt).getTime() : NaN;
+  if (isFinite(last) && Date.now() - last < RETRY_GAP_MIN * 60000) return false;
+  store.lastAttempt = new Date().toISOString();
+  saveMarket(store);
+  return true;
+}
+
 async function checkMarketSchedule() {
   if (_wlRunning || !quoteTickers().length) return;
+  // Offline is not a failed attempt — it never reached a feed, so it must not
+  // spend the one attempt the gap above allows.
+  if (navigator.onLine === false) return;
   const due = dueSlots();
   if (!due.length) return;
+  if (!attemptAllowed()) return;
   // Missed slots are water under the bridge — one run brings everything
   // current, so take the latest and retire the rest.
   const run   = due[due.length - 1];
   const fresh = await refreshQuotes(false, run.label);
   // A run that reached nothing at all — no connection, feeds down — leaves
-  // the slot due so the next tick tries again rather than writing the day off.
+  // the slot due so a later tick tries again rather than writing the day off.
   if (fresh) { markSlotsRun(due.map(s => s.key)); notifyTargetHits(); }
 }
 
@@ -4131,7 +4224,14 @@ function renderOnlineState() {
 }
 window.addEventListener('offline', renderOnlineState);
 // Coming back online is the moment to catch up anything the schedule missed
-window.addEventListener('online', () => { renderOnlineState(); checkMarketSchedule(); });
+window.addEventListener('online', () => {
+  // Reconnecting is new information: whatever failed while there was no
+  // network deserves an immediate retry rather than sitting out the gap.
+  const m = loadMarket();
+  if (m.lastAttempt) { delete m.lastAttempt; saveMarket(m); }
+  renderOnlineState();
+  checkMarketSchedule();
+});
 
 /* ═══════════════════════════════════════
    EXPIRY REMINDERS

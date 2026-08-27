@@ -268,6 +268,44 @@ function dueSlots(state, m) {
   return SLOTS.filter(s => !runs.includes(s.key) && m.minutes >= s.h * 60 + s.m);
 }
 
+/* Pacing. The 26-second walk exists for one reason: Massive's free tier
+   allows five requests a minute and collectMassive makes two per ticker.
+   With no key nothing here touches Massive at all — it is Cboe's CDN, one
+   request per ticker, with no published per-minute limit — so the same pause
+   buys nothing and costs the run its budget. */
+const GAP_KEYED = 26000;
+const GAP_OPEN  = 1500;
+
+/* A Worker driven by a Cron Trigger is stopped at fifteen minutes. Forty
+   tickers at 26 seconds is over seventeen, so a keyed collection was being
+   killed part-way — and since the snapshot was only written at the very end,
+   a killed run stored nothing at all. Every cron then started the same doomed
+   pass again and the app was served the same old snapshot for ever.
+   Two changes fix that: stop while there is still room to write, and write as
+   we go. What a budgeted run does not reach keeps its earlier timestamp, so
+   the next slot picks it up first and the app fetches it directly meanwhile. */
+const RUN_BUDGET_MS = 12 * 60 * 1000;
+const WRITE_EVERY   = 5;
+
+const SLOT_KEYS = SLOTS.map(s => s.key);
+
+// Whatever has waited longest goes first, so a run that cannot reach the whole
+// list rotates through it across slots instead of retreading the same head.
+function collectOrder(tickers, quotes) {
+  const stamp = tk => {
+    const q = quotes[tk] || {};
+    const t = [q.asOf, q.errorAt].map(v => (v ? Date.parse(v) : NaN)).filter(n => isFinite(n));
+    return t.length ? Math.max(...t) : null;
+  };
+  return tickers
+    .map((tk, i) => ({ tk, i, at: stamp(tk) }))
+    .sort((a, b) => {
+      if (a.at == null || b.at == null) return (a.at == null ? 0 : 1) - (b.at == null ? 0 : 1) || a.i - b.i;
+      return a.at - b.at || a.i - b.i;
+    })
+    .map(x => x.tk);
+}
+
 async function collect(env, force) {
   if (!env?.QUOTES) return { skipped: 'no KV namespace bound' };
 
@@ -280,25 +318,42 @@ async function collect(env, force) {
   const tickers = (await env.QUOTES.get(WATCH_KEY, 'json')) || [];
   if (!tickers.length) return { skipped: 'watchlist empty' };
 
-  // Sequential, to stay inside the 5-requests-a-minute free allowance. Two
-  // calls per ticker, so a symbol every 26 seconds.
   const quotes = { ...(prev.quotes || {}) };
-  for (const tk of tickers.slice(0, MAX_WATCH)) {
+  const runs   = [...new Set(
+    (prev.date === m.date ? (prev.runs || []) : []).concat(due.map(s => s.key))
+  )].filter(k => SLOT_KEYS.includes(k));
+
+  const save = () => env.QUOTES.put(SNAP_KEY, JSON.stringify({
+    date: m.date, runs, updated: new Date().toISOString(),
+    premarket: isPremarket(m), quotes
+  }));
+
+  /* Claim the slot before collecting, not after. The cron fires every five
+     minutes and a collection runs for longer than that, so a slot left unclaimed
+     has the next firing start a second pass over the same tickers alongside the
+     first — two runs racing to write one snapshot, and on a keyed account both
+     of them rate limited. */
+  await save();
+
+  const gap      = env?.MASSIVE_KEY ? GAP_KEYED : GAP_OPEN;
+  const deadline = Date.now() + RUN_BUDGET_MS;
+  const order    = collectOrder(tickers.slice(0, MAX_WATCH), quotes);
+  let done = 0;
+  for (const tk of order) {
+    if (done && Date.now() + gap > deadline) break;
+    if (done) await new Promise(r => setTimeout(r, gap));
     try {
       quotes[tk] = { ...(await collectTicker(tk, env)), asOf: new Date().toISOString(), premarket: isPremarket(m) };
     } catch (e) {
       const kept = quotes[tk] || {};
       quotes[tk] = { ...kept, error: String(e.message || e).slice(0, 200), errorAt: new Date().toISOString() };
     }
-    await new Promise(r => setTimeout(r, 26000));
+    done++;
+    if (done % WRITE_EVERY === 0) await save();
   }
 
-  const runs = (prev.date === m.date ? (prev.runs || []) : []).concat(due.map(s => s.key));
-  await env.QUOTES.put(SNAP_KEY, JSON.stringify({
-    date: m.date, runs, updated: new Date().toISOString(),
-    premarket: isPremarket(m), quotes
-  }));
-  return { collected: tickers.length, slots: due.map(s => s.key) };
+  await save();
+  return { collected: done, of: order.length, slots: due.map(s => s.key) };
 }
 
 function corsHeaders(origin) {
