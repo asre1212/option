@@ -1515,7 +1515,7 @@
         <div class="rp-val" id="a-roi-val">—</div>
       </div>
       </div>
-      <div id="a-box-fields" hidden>
+      <div id="a-box-fields" hidden oninput="updateBoxRatePreview()" onchange="updateBoxRatePreview()">
         <div class="fg">
           <label class="fl" for="box-ticker">Ticker</label>
           <input class="fi" id="box-ticker" type="text" value="$SPX" autocapitalize="characters" spellcheck="false">
@@ -1540,6 +1540,13 @@
             <div class="stat-sub">Used for annualized interest. Set the actual date for older trades.</div>
           </div>
         </details>
+        <div class="roi-preview" id="box-rate-preview" hidden aria-live="polite">
+          <div>
+            <div class="rp-label">Annualized Interest Rate</div>
+            <div class="rp-sub" id="box-rate-preview-term"></div>
+          </div>
+          <div class="rp-val" id="box-rate-preview-value">—</div>
+        </div>
       </div>
       <button class="sub-btn" id="add-submit" onclick="addTrade()">Add Trade</button>
       <button id="add-batch-link" class="batch-link" onclick="closeOverlay('m-add');openBatchModal()">

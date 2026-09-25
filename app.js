@@ -664,6 +664,27 @@ function boxTermDays(box) {
     - Date.parse(box.dateOpened + 'T00:00:00Z')) / 86400000);
   return days > 0 ? days : null;
 }
+function boxAnnualizedRate(box) {
+  const days = boxTermDays(box);
+  if (days === null || !Number.isFinite(box.creditReceived) || box.creditReceived <= 0
+      || !Number.isFinite(box.interest) || box.interest < 0) return null;
+  const rate = (box.interest / box.creditReceived) * (365 / days) * 100;
+  return Number.isFinite(rate) ? rate : null;
+}
+function updateBoxRatePreview() {
+  const box = normalizeBoxSpread({
+    ticker: document.getElementById('box-ticker').value,
+    creditReceived: document.getElementById('box-credit').value,
+    interest: document.getElementById('box-interest').value,
+    expDate: document.getElementById('box-expdate').value,
+    dateOpened: document.getElementById('box-opened').value
+  });
+  const rate = box && box.dateOpened <= boxToday() ? boxAnnualizedRate(box) : null;
+  document.getElementById('box-rate-preview').hidden = rate === null;
+  document.getElementById('box-rate-preview-value').textContent = rate === null ? '—' : fmtPct(rate);
+  document.getElementById('box-rate-preview-term').textContent = rate === null ? ''
+    : `Expected annualized cost · ${fmtInt(boxTermDays(box))} day${boxTermDays(box) === 1 ? '' : 's'}`;
+}
 function boxRateYTD(boxes, today = boxToday()) {
   const realized = boxes.filter(b => b.expDate <= today && b.expDate.slice(0,4) === today.slice(0,4));
   if (!realized.length || realized.some(b => boxTermDays(b) === null)) return null;
@@ -679,6 +700,7 @@ function setAddEntryMode(mode) {
   document.getElementById('add-batch-link').hidden = box;
   document.getElementById('add-submit').textContent = box
     ? (editingBoxId ? 'Save Changes' : 'Add Box Spread') : 'Add Trade';
+  if (box) updateBoxRatePreview();
 }
 function editBoxSpread(id) {
   const box = loadBoxSpreads().find(b => b.id === id);
@@ -747,13 +769,14 @@ function renderBoxSpreads(d = load()) {
   });
   document.getElementById('box-list').innerHTML = sorted.length ? sorted.map(b => {
     const expired = b.expDate <= today;
+    const expectedRate = boxAnnualizedRate(b);
     return `<div class="trade-card">
       <div class="tc-main">
         <div class="tc-row1"><div class="tc-ticker">${esc(b.ticker)}</div>
           <span class="badge">${expired ? 'Expired' : 'Active'}</span></div>
         <div class="tc-metrics" style="grid-template-columns:repeat(2,minmax(0,1fr))">
           <div class="metric"><div class="m-label">Credit Received</div><div class="m-val">${fmtMoney(b.creditReceived)}</div></div>
-          <div class="metric"><div class="m-label">Interest Cost</div><div class="m-val">${fmtMoney(b.interest)}</div></div>
+          <div class="metric"><div class="m-label">Interest Cost</div><div class="m-val">${fmtMoney(b.interest)} <span title="Expected annualized interest rate">(${expectedRate === null ? '—' : fmtPct(expectedRate)})</span></div></div>
           <div class="metric"><div class="m-label">Expiration</div><div class="m-val">${esc(b.expDate)}</div></div>
           <div class="metric"><div class="m-label">Days to Expiry</div><div class="m-val">${boxDaysRemaining(b,today)}</div></div>
         </div>
