@@ -58,6 +58,16 @@ Interest**, only in that expiration year. The calendar refreshes while open and
 when returning to the app; reopening after offline days catches up immediately.
 Interest is derived from records, so repeated refreshes cannot book it twice.
 
+The same YTD box shows the **annualized interest rate** for spreads that expired
+this year: `365 × sum(interest) / sum(credit received × full term days) × 100`.
+For one spread this is `(interest / credit) × (365 / days) × 100`.
+The term is trade date through expiration, not the remaining countdown or only
+the days falling in the current year. Trade date defaults to the local entry
+date and can be corrected under the collapsed Trade date control. Edits and
+backups preserve it. Existing records without a trade date keep their dollar
+interest, but the rate shows an em dash until all realized terms are known and
+positive; dates are never guessed. No realized entries also shows an em dash.
+
 Box spreads live in a separate `boxSpreads` collection. Neither the credit nor
 interest enters realized P&L, overall ROI, committed trading capital, or trading
 analysis. JSON backup/restore includes them (older backups remain supported),

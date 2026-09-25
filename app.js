@@ -487,6 +487,8 @@ function openAddModal(prefill) {
   document.getElementById('add-title').textContent = 'New Trade';
   document.getElementById('add-entry-kind').hidden = false;
   document.getElementById('box-ticker').value = '$SPX';
+  document.getElementById('box-opened').value = boxToday();
+  document.getElementById('box-date-details').open = false;
   ['box-credit','box-interest','box-expdate'].forEach(id => document.getElementById(id).value = '');
   setAddEntryMode('option');
   addType = prefill?.type || 'put';
@@ -642,7 +644,8 @@ function normalizeBoxSpread(raw) {
   return {
     id: typeof raw.id === 'string' && /^[a-z0-9_-]{1,40}$/i.test(raw.id) ? raw.id : uid(),
     ticker, creditReceived: Math.round(creditReceived * 100) / 100,
-    interest: Math.round(interest * 100) / 100, expDate: raw.expDate
+    interest: Math.round(interest * 100) / 100, expDate: raw.expDate,
+    dateOpened: validBoxDate(raw.dateOpened) ? raw.dateOpened : null
   };
 }
 function boxDaysRemaining(box, today = boxToday()) {
@@ -652,6 +655,20 @@ function boxDaysRemaining(box, today = boxToday()) {
 function boxInterestYTD(boxes, today = boxToday()) {
   return Math.round(boxes.filter(b => b.expDate <= today && b.expDate.slice(0,4) === today.slice(0,4))
     .reduce((sum, b) => sum + b.interest, 0) * 100) / 100;
+}
+// Simple annualized financing rate, weighted by dollars borrowed × days.
+// Missing/zero-length terms make the aggregate unavailable, never partial.
+function boxTermDays(box) {
+  if (!validBoxDate(box.dateOpened) || !validBoxDate(box.expDate)) return null;
+  const days = Math.round((Date.parse(box.expDate + 'T00:00:00Z')
+    - Date.parse(box.dateOpened + 'T00:00:00Z')) / 86400000);
+  return days > 0 ? days : null;
+}
+function boxRateYTD(boxes, today = boxToday()) {
+  const realized = boxes.filter(b => b.expDate <= today && b.expDate.slice(0,4) === today.slice(0,4));
+  if (!realized.length || realized.some(b => boxTermDays(b) === null)) return null;
+  const creditDays = realized.reduce((sum,b) => sum + b.creditReceived * boxTermDays(b), 0);
+  return creditDays > 0 ? realized.reduce((sum,b) => sum + b.interest,0) * 36500 / creditDays : null;
 }
 let editingBoxId = null;
 function setAddEntryMode(mode) {
@@ -674,15 +691,24 @@ function editBoxSpread(id) {
   document.getElementById('box-credit').value = box.creditReceived;
   document.getElementById('box-interest').value = box.interest;
   document.getElementById('box-expdate').value = box.expDate;
+  document.getElementById('box-opened').value = box.dateOpened || '';
+  document.getElementById('box-date-details').open = boxTermDays(box) === null;
   setAddEntryMode('box');
 }
 function saveBoxSpread() {
+  const opened = document.getElementById('box-opened').value;
+  const expiry = document.getElementById('box-expdate').value;
+  if (opened && (!validBoxDate(opened) || opened > expiry || opened > boxToday())) {
+    alert('Trade date must be on or before today and expiration. For an older spread, set its actual trade date.');
+    document.getElementById('box-date-details').open = true;
+    return;
+  }
   const box = normalizeBoxSpread({
     id: editingBoxId,
     ticker: document.getElementById('box-ticker').value,
     creditReceived: document.getElementById('box-credit').value,
     interest: document.getElementById('box-interest').value,
-    expDate: document.getElementById('box-expdate').value
+    expDate: expiry, dateOpened: opened
   });
   if (!box) { alert('Enter a ticker, a credit greater than zero, an interest cost of zero or more, and a valid expiration date.'); return; }
   const d = load();
@@ -708,6 +734,12 @@ function renderBoxSpreads(d = load()) {
   const active = boxes.filter(b => b.expDate > today).length;
   document.getElementById('box-count').textContent = `${active} active · ${boxes.length - active} expired`;
   document.getElementById('box-ytd-interest').textContent = fmtMoney(boxInterestYTD(boxes, today));
+  const rate = boxRateYTD(boxes, today);
+  document.getElementById('box-ytd-rate').textContent = rate === null ? '—' : fmtPct(rate);
+  const incomplete = boxes.some(b => b.expDate <= today && b.expDate.slice(0,4) === today.slice(0,4) && boxTermDays(b) === null);
+  document.getElementById('box-ytd-rate-note').textContent = incomplete
+    ? 'Set a trade date before expiration on each expired entry to calculate the rate.'
+    : 'Annualized · weighted by credit × days';
   const sorted = [...boxes].sort((a,b) => {
     const pastA = a.expDate <= today, pastB = b.expDate <= today;
     return Number(pastA) - Number(pastB)
@@ -4542,16 +4574,17 @@ async function exportExcel() {
   // Financing gets its own sheet and never enters trading performance totals.
   const boxes = loadBoxSpreads(), boxDay = boxToday();
   const boxRows = [
-    ['Ticker','Credit Received','Interest Cost','Expiration','Days to Expiry','Status','Realized Interest'],
+    ['Ticker','Credit Received','Interest Cost','Expiration','Days to Expiry','Status','Realized Interest','Trade Date','Term Days'],
     ...boxes.map(b => [b.ticker,b.creditReceived,b.interest,b.expDate,
       boxDaysRemaining(b,boxDay),b.expDate <= boxDay ? 'Expired' : 'Active',
-      b.expDate <= boxDay ? b.interest : 0]),
-    ['YTD Interest', '', boxInterestYTD(boxes,boxDay)]
+      b.expDate <= boxDay ? b.interest : 0,b.dateOpened || '',boxTermDays(b)]),
+    ['YTD Interest', '', boxInterestYTD(boxes,boxDay)],
+    ['YTD Annualized Interest (%)', '', boxRateYTD(boxes,boxDay)]
   ];
   const wsBox = XLSX.utils.aoa_to_sheet(boxRows);
-  wsBox['!cols'] = colW([16,18,18,14,16,12,18]);
+  wsBox['!cols'] = colW([28,18,18,14,16,12,18,14,12]);
   applyNumberFormats(wsBox, boxRows.length - 1,
-    {1:XL_MONEY,2:XL_MONEY,4:XL_INT,6:XL_MONEY});
+    {1:XL_MONEY,2:XL_MONEY,4:XL_INT,6:XL_MONEY,8:XL_INT});
   styleHeaderRow(wsBox, boxRows[0].length);
   XLSX.utils.book_append_sheet(wb, wsBox, 'Short Box Spreads');
 

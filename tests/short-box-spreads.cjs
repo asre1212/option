@@ -43,6 +43,7 @@ const server = http.createServer((req,res) => {
     await page.fill('#box-expdate','2026-09-26');
     await page.screenshot({path:'/tmp/box-entry.png'});
     await page.click('#add-submit');
+    assert.equal(await page.textContent('#box-ytd-rate'),'—');
     assert.equal(await page.textContent('#box-ytd-interest'),'$0.00');
     assert.match(await page.textContent('#box-list'),/Days to Expiry1/);
     assert.deepEqual(await page.evaluate(()=>weightedStats()),result);
@@ -63,6 +64,20 @@ const server = http.createServer((req,res) => {
       invalid:['2026-02-30','bad'].map(expDate=>normalizeBoxSpread({ticker:'$SPX',creditReceived:10,interest:1,expDate})),
       missing:normalizeBoxSpread({ticker:'$SPX',creditReceived:10,interest:'',expDate:'2026-10-01'})
     })),{dst:2,ytd:700,invalid:[null,null],missing:null});
+    assert.equal(await page.textContent('#box-ytd-rate'),'183.42%');
+    assert.deepEqual(await page.evaluate(()=>{
+      const boxes = [
+        {creditReceived:10000,interest:500,dateOpened:'2025-09-26',expDate:'2026-09-26'},
+        {creditReceived:20000,interest:1000,dateOpened:'2024-09-26',expDate:'2026-09-26'}
+      ];
+      return {
+        weighted:boxRateYTD(boxes,'2026-09-26'),
+        future:boxRateYTD(boxes,'2026-09-25'),
+        nextYear:boxRateYTD(boxes,'2027-01-01'),
+        missing:boxRateYTD([...boxes,{creditReceived:100,interest:1,expDate:'2026-09-26'}],'2026-09-26'),
+        zero:boxRateYTD([{creditReceived:100,interest:1,dateOpened:'2026-09-26',expDate:'2026-09-26'}],'2026-09-26')
+      };
+    }),{weighted:3,future:null,nextYear:null,missing:null,zero:null});
     // Corrections replace the record rather than duplicating interest.
     await page.click('[data-box-edit]');
     await page.fill('#box-interest','600'); await page.click('#add-submit');
@@ -77,6 +92,7 @@ const server = http.createServer((req,res) => {
     const download=await downloadPromise;
     const payload=JSON.parse(fs.readFileSync(await download.path(),'utf8'));
     assert.equal(payload.boxSpreads[0].interest,600);
+    assert.equal(payload.boxSpreads[0].dateOpened,'2026-09-25');
     payload.trades=[];
     await page.evaluate(p=>previewImport(new File([JSON.stringify(p)],'boxes.json',{type:'application/json'})),payload);
     await page.waitForSelector('#m-import.open');
@@ -102,6 +118,20 @@ const server = http.createServer((req,res) => {
     await page.click('#fab');
     assert.equal(await page.inputValue('#a-entry-mode'),'option');
     assert.equal(await page.locator('#a-option-fields').isVisible(),true);
+    // Older box entries never receive a made-up start date; editing supplies it.
+    await page.evaluate(()=>{
+      closeOverlay('m-add');
+      save({trades:[],boxSpreads:[{id:'oldbox',ticker:'$SPX',creditReceived:10000,interest:500,expDate:'2026-09-26'}]});
+    });
+    await page.clock.setSystemTime(new Date('2026-09-26T12:00:00-04:00'));
+    await page.evaluate(()=>renderBoxSpreads());
+    assert.equal(await page.textContent('#box-ytd-rate'),'—');
+    assert.equal(await page.textContent('#box-ytd-interest'),'$500.00');
+    await page.click('[data-box-edit]');
+    assert.equal(await page.inputValue('#box-opened'),'');
+    await page.fill('#box-opened','2025-09-26');
+    await page.click('#add-submit');
+    assert.equal(await page.textContent('#box-ytd-rate'),'5.00%');
     // A legacy backup with no box collection still restores safely.
     await page.evaluate(()=>previewImport(new File([JSON.stringify({version:2,trades:[{
       id:'legacy',ticker:'AAPL',strikePrice:150,premium:2,type:'put',status:'active',
@@ -112,6 +142,6 @@ const server = http.createServer((req,res) => {
     assert.equal(await page.evaluate(()=>load().trades.length),1);
     assert.equal(await page.evaluate(()=>loadBoxSpreads().length),0);
     assert.deepEqual(errors,[]);
-    console.log('PASS: entry, local midnight, DTE/DST, YTD, isolation, corrections, persistence, backup replace/merge, year rollover, deletion, regular form.');
+    console.log('PASS: entry, local midnight, DTE/DST, YTD, isolation, corrections, persistence, backup replace/merge, year rollover, deletion, regular form, weighted rates, missing dates, date correction.');
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>server.close());
