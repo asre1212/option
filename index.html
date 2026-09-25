@@ -13,6 +13,7 @@
   <title>Options Tracker</title>
   <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
+    [hidden]{display:none!important}
     *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     :root{
       --bg:#f5f5f0;--surface:#fafaf7;--card:#ffffff;--card2:#ffffff;
@@ -1054,6 +1055,18 @@
           <span class="sec-count" id="pos-count">0</span>
         </div>
         <div id="pos-list"></div>
+        <section aria-labelledby="box-heading">
+          <div class="sec-hdr">
+            <span class="sec-title" id="box-heading">Short Box Spread</span>
+            <span class="sec-count" id="box-count">0</span>
+          </div>
+          <div class="stat-card" style="margin-bottom:12px">
+            <div class="stat-label">YTD Interest</div>
+            <div class="stat-value neu" id="box-ytd-interest">$0.00</div>
+            <div class="stat-sub">Interest cost · recognized on expiration</div>
+          </div>
+          <div id="box-list"></div>
+        </section>
       </div>
     </div>
 
@@ -1432,12 +1445,20 @@
   <div class="sheet">
     <div class="sheet-handle"></div>
     <div class="sheet-hdr">
-      <div class="sheet-title">New Trade</div>
+      <div class="sheet-title" id="add-title">New Trade</div>
       <button class="sheet-close" onclick="closeOverlay('m-add')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>
     <div class="sheet-body">
+      <div class="fg" id="add-entry-kind">
+        <label class="fl" for="a-entry-mode">Entry Type</label>
+        <select class="fi" id="a-entry-mode" onchange="setAddEntryMode(this.value)">
+          <option value="option">Option Trade</option>
+          <option value="box">Box Spread</option>
+        </select>
+      </div>
+      <div id="a-option-fields">
       <div class="fg">
         <label class="fl">Ticker</label>
         <input class="fi" type="text" id="a-ticker" placeholder="AAPL" style="text-transform:uppercase" oninput="renderCoversOptions()">
@@ -1490,8 +1511,27 @@
         </div>
         <div class="rp-val" id="a-roi-val">—</div>
       </div>
-      <button class="sub-btn" onclick="addTrade()">Add Trade</button>
-      <button class="batch-link" onclick="closeOverlay('m-add');openBatchModal()">
+      </div>
+      <div id="a-box-fields" hidden>
+        <div class="fg">
+          <label class="fl" for="box-ticker">Ticker</label>
+          <input class="fi" id="box-ticker" type="text" value="$SPX" autocapitalize="characters" spellcheck="false">
+        </div>
+        <div class="fg">
+          <label class="fl" for="box-credit">Credit Received ($)</label>
+          <input class="fi" id="box-credit" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="Total credit">
+        </div>
+        <div class="fg">
+          <label class="fl" for="box-interest">Interest ($)</label>
+          <input class="fi" id="box-interest" type="number" inputmode="decimal" min="0" step="0.01" placeholder="Total interest cost">
+        </div>
+        <div class="fg">
+          <label class="fl" for="box-expdate">Expiration Date</label>
+          <input class="fi" id="box-expdate" type="date">
+        </div>
+      </div>
+      <button class="sub-btn" id="add-submit" onclick="addTrade()">Add Trade</button>
+      <button id="add-batch-link" class="batch-link" onclick="closeOverlay('m-add');openBatchModal()">
         Entering past trades? Use batch entry →
       </button>
     </div>

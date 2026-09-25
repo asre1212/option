@@ -483,6 +483,12 @@ function cSyncDTEToDate() {
 }
 
 function openAddModal(prefill) {
+  editingBoxId = null;
+  document.getElementById('add-title').textContent = 'New Trade';
+  document.getElementById('add-entry-kind').hidden = false;
+  document.getElementById('box-ticker').value = '$SPX';
+  ['box-credit','box-interest','box-expdate'].forEach(id => document.getElementById(id).value = '');
+  setAddEntryMode('option');
   addType = prefill?.type || 'put';
   document.getElementById('a-ticker').value  = prefill?.ticker  || '';
   document.getElementById('a-strike').value  = prefill?.strike  || '';
@@ -579,6 +585,7 @@ function setSpotAtOpen(id) {
 }
 
 function addTrade() {
+  if (document.getElementById('a-entry-mode').value === 'box') { saveBoxSpread(); return; }
   const ticker  = document.getElementById('a-ticker').value.trim().toUpperCase();
   const strike  = parseFloat(document.getElementById('a-strike').value);
   const premium = parseFloat(document.getElementById('a-premium').value);
@@ -608,6 +615,138 @@ function addTrade() {
   syncWatchlistToRelay();
   if (spot == null) backfillSpots(true);
 }
+
+/* Short boxes are financing records, deliberately outside trades/positions.
+   Derived maturity avoids duplicate interest bookings and catches up after
+   offline days. Dates use the device's local calendar, never UTC midnight. */
+const loadBoxSpreads = (d = load()) => Array.isArray(d.boxSpreads) ? d.boxSpreads : [];
+const boxToday = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+function validBoxDate(value) {
+  if (typeof value !== 'string' || !DATE_RE.test(value)) return false;
+  const d = new Date(value + 'T00:00:00Z');
+  return Number.isFinite(d.getTime()) && d.toISOString().slice(0,10) === value;
+}
+function normalizeBoxSpread(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const ticker = String(raw.ticker || '').trim().toUpperCase();
+  const money = value => (typeof value === 'number' || typeof value === 'string')
+    && String(value).trim() !== '' ? Number(value) : NaN;
+  const creditReceived = money(raw.creditReceived), interest = money(raw.interest);
+  if (!/^\$?[A-Z.]{1,6}$/.test(ticker) || !Number.isFinite(creditReceived)
+      || creditReceived < 0.01 || creditReceived > Number.MAX_SAFE_INTEGER / 100
+      || !Number.isFinite(interest) || interest < 0 || interest > Number.MAX_SAFE_INTEGER / 100
+      || !validBoxDate(raw.expDate)) return null;
+  return {
+    id: typeof raw.id === 'string' && /^[a-z0-9_-]{1,40}$/i.test(raw.id) ? raw.id : uid(),
+    ticker, creditReceived: Math.round(creditReceived * 100) / 100,
+    interest: Math.round(interest * 100) / 100, expDate: raw.expDate
+  };
+}
+function boxDaysRemaining(box, today = boxToday()) {
+  return Math.max(0, Math.round((Date.parse(box.expDate + 'T00:00:00Z')
+    - Date.parse(today + 'T00:00:00Z')) / 86400000));
+}
+function boxInterestYTD(boxes, today = boxToday()) {
+  return Math.round(boxes.filter(b => b.expDate <= today && b.expDate.slice(0,4) === today.slice(0,4))
+    .reduce((sum, b) => sum + b.interest, 0) * 100) / 100;
+}
+let editingBoxId = null;
+function setAddEntryMode(mode) {
+  const box = mode === 'box';
+  document.getElementById('a-entry-mode').value = box ? 'box' : 'option';
+  document.getElementById('a-option-fields').hidden = box;
+  document.getElementById('a-box-fields').hidden = !box;
+  document.getElementById('add-batch-link').hidden = box;
+  document.getElementById('add-submit').textContent = box
+    ? (editingBoxId ? 'Save Changes' : 'Add Box Spread') : 'Add Trade';
+}
+function editBoxSpread(id) {
+  const box = loadBoxSpreads().find(b => b.id === id);
+  if (!box) return;
+  openAddModal();
+  editingBoxId = id;
+  document.getElementById('add-title').textContent = 'Edit Short Box Spread';
+  document.getElementById('add-entry-kind').hidden = true;
+  document.getElementById('box-ticker').value = box.ticker;
+  document.getElementById('box-credit').value = box.creditReceived;
+  document.getElementById('box-interest').value = box.interest;
+  document.getElementById('box-expdate').value = box.expDate;
+  setAddEntryMode('box');
+}
+function saveBoxSpread() {
+  const box = normalizeBoxSpread({
+    id: editingBoxId,
+    ticker: document.getElementById('box-ticker').value,
+    creditReceived: document.getElementById('box-credit').value,
+    interest: document.getElementById('box-interest').value,
+    expDate: document.getElementById('box-expdate').value
+  });
+  if (!box) { alert('Enter a ticker, a credit greater than zero, an interest cost of zero or more, and a valid expiration date.'); return; }
+  const d = load();
+  d.boxSpreads = loadBoxSpreads(d);
+  if (editingBoxId) {
+    const index = d.boxSpreads.findIndex(b => b.id === editingBoxId);
+    if (index < 0) { alert('This entry no longer exists. Reopen the form to add it.'); return; }
+    d.boxSpreads[index] = box;
+  } else d.boxSpreads.push(box);
+  save(d);
+  closeOverlay('m-add');
+  renderActive(); updateStats();
+}
+function deleteBoxSpread(id) {
+  if (!confirm('Delete this box spread entry? This removes its recorded interest too.')) return;
+  const d = load();
+  d.boxSpreads = loadBoxSpreads(d).filter(b => b.id !== id);
+  save(d);
+  renderActive(); updateStats();
+}
+function renderBoxSpreads(d = load()) {
+  const today = boxToday(), boxes = loadBoxSpreads(d);
+  const active = boxes.filter(b => b.expDate > today).length;
+  document.getElementById('box-count').textContent = `${active} active · ${boxes.length - active} expired`;
+  document.getElementById('box-ytd-interest').textContent = fmtMoney(boxInterestYTD(boxes, today));
+  const sorted = [...boxes].sort((a,b) => {
+    const pastA = a.expDate <= today, pastB = b.expDate <= today;
+    return Number(pastA) - Number(pastB)
+      || (pastA ? b.expDate.localeCompare(a.expDate) : a.expDate.localeCompare(b.expDate));
+  });
+  document.getElementById('box-list').innerHTML = sorted.length ? sorted.map(b => {
+    const expired = b.expDate <= today;
+    return `<div class="trade-card">
+      <div class="tc-main">
+        <div class="tc-row1"><div class="tc-ticker">${esc(b.ticker)}</div>
+          <span class="badge">${expired ? 'Expired' : 'Active'}</span></div>
+        <div class="tc-metrics" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+          <div class="metric"><div class="m-label">Credit Received</div><div class="m-val">${fmtMoney(b.creditReceived)}</div></div>
+          <div class="metric"><div class="m-label">Interest Cost</div><div class="m-val">${fmtMoney(b.interest)}</div></div>
+          <div class="metric"><div class="m-label">Expiration</div><div class="m-val">${esc(b.expDate)}</div></div>
+          <div class="metric"><div class="m-label">Days to Expiry</div><div class="m-val">${boxDaysRemaining(b,today)}</div></div>
+        </div>
+        <div class="stat-sub">${expired ? 'Interest realized on ' : 'Interest will be realized on '}${esc(b.expDate)}</div>
+      </div>
+      <div class="tc-actions">
+        <button class="act-btn" data-box-edit="${esc(b.id)}">Edit Entry</button>
+        <button class="act-btn red" data-box-delete="${esc(b.id)}">Delete Entry</button>
+      </div>
+    </div>`;
+  }).join('') : '<div class="empty-txt" style="padding:16px 0">No short box spreads yet. Tap + and choose Box Spread.</div>';
+}
+document.addEventListener('click', event => {
+  const edit = event.target.closest('[data-box-edit]');
+  const remove = event.target.closest('[data-box-delete]');
+  if (edit) editBoxSpread(edit.dataset.boxEdit);
+  if (remove) deleteBoxSpread(remove.dataset.boxDelete);
+});
+let lastBoxDay = boxToday();
+function refreshBoxCalendar() {
+  const day = boxToday();
+  if (day !== lastBoxDay) { lastBoxDay = day; renderBoxSpreads(); }
+}
+setInterval(refreshBoxCalendar, 1000);
+window.addEventListener('pageshow', () => renderBoxSpreads());
 
 /* ═══════════════════════════════════════
    BATCH HISTORIC ENTRY
@@ -1547,6 +1686,7 @@ function renderActive() {
     el.innerHTML = trades.map(tradeCardHTML).join('');
   }
   renderPositions(d);
+  renderBoxSpreads(d);
 }
 
 /* ── Share lots held ── */
@@ -1847,7 +1987,7 @@ function updateStats() {
 function renderBackupReminder() {
   const el = document.getElementById('backup-reminder');
   if (!el) return;
-  const hasTrades = load().trades.length > 0;
+  const hasTrades = load().trades.length > 0 || loadBoxSpreads().length > 0;
   const dismissed = sessionStorage.getItem('opts_backup_reminder_dismissed');
   const ts    = localStorage.getItem('opts_last_export');
   const stale = !ts || (Date.now() - new Date(ts).getTime()) > 30 * 86400000;
@@ -4399,6 +4539,22 @@ async function exportExcel() {
     XLSX.utils.book_append_sheet(wb, ws4, 'Share Lots');
   }
 
+  // Financing gets its own sheet and never enters trading performance totals.
+  const boxes = loadBoxSpreads(), boxDay = boxToday();
+  const boxRows = [
+    ['Ticker','Credit Received','Interest Cost','Expiration','Days to Expiry','Status','Realized Interest'],
+    ...boxes.map(b => [b.ticker,b.creditReceived,b.interest,b.expDate,
+      boxDaysRemaining(b,boxDay),b.expDate <= boxDay ? 'Expired' : 'Active',
+      b.expDate <= boxDay ? b.interest : 0]),
+    ['YTD Interest', '', boxInterestYTD(boxes,boxDay)]
+  ];
+  const wsBox = XLSX.utils.aoa_to_sheet(boxRows);
+  wsBox['!cols'] = colW([16,18,18,14,16,12,18]);
+  applyNumberFormats(wsBox, boxRows.length - 1,
+    {1:XL_MONEY,2:XL_MONEY,4:XL_INT,6:XL_MONEY});
+  styleHeaderRow(wsBox, boxRows[0].length);
+  XLSX.utils.book_append_sheet(wb, wsBox, 'Short Box Spreads');
+
   /* ── Download ── */
   XLSX.writeFile(wb, `options-tracker-${date}.xlsx`);
 }
@@ -4550,6 +4706,7 @@ async function checkExpiryReminders(force) {
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
+    renderBoxSpreads();
     renderOnlineState(); checkExpiryReminders(); checkMarketSchedule();
   }
 });
@@ -4595,11 +4752,12 @@ function hardRefresh() {
 function exportData() {
   const d = load();
   const payload = {
-    version: 2,
+    version: 3,
     exported: new Date().toISOString(),
     exportedFrom: 'Options Tracker',
     trades: d.trades,
     positions: loadPositions(d),
+    boxSpreads: loadBoxSpreads(d),
     watchlist: loadWatchlist(d),
     watchNotes: loadWatchNotes(d)
   };
@@ -4625,20 +4783,23 @@ function exportData() {
 function verifyBackup(payload, d) {
   const el = document.getElementById('backup-verify');
   if (!el) return;
-  let restored = 0, positions = 0, err = null;
+  let restored = 0, positions = 0, boxes = 0, err = null;
   try {
     const parsed = JSON.parse(JSON.stringify(payload));
     restored  = (parsed.trades || []).map(normalizeTrade).filter(Boolean).length;
     positions = (parsed.positions || []).map(normalizePosition).filter(Boolean).length;
+    boxes = (parsed.boxSpreads || []).map(normalizeBoxSpread).filter(Boolean).length;
   } catch (e) { err = e.message; }
   const wantT = d.trades.length, wantP = loadPositions(d).length;
-  const ok = !err && restored === wantT && positions === wantP;
+  const ok = !err && restored === wantT && positions === wantP && boxes === loadBoxSpreads(d).length;
   el.className   = 'opt-row-sub' + (ok ? '' : ' ');
   el.style.color = ok ? 'var(--green)' : 'var(--red)';
   el.textContent = ok
     ? `✓ Verified restorable — ${fmtInt(restored)} trade${restored===1?'':'s'}`
-      + (positions ? ` and ${fmtInt(positions)} share lot${positions===1?'':'s'}` : '') + ' read back cleanly'
+      + (positions ? ` and ${fmtInt(positions)} share lot${positions===1?'':'s'}` : '')
+      + (boxes ? ` and ${fmtInt(boxes)} box spread${boxes===1?'':'s'}` : '') + ' read back cleanly'
     : `⚠ Verify failed — ${fmtInt(restored)} of ${fmtInt(wantT)} trades read back`
+      + `; ${fmtInt(boxes)} of ${fmtInt(loadBoxSpreads(d).length)} box spreads read back`
       + (err ? ` (${err})` : '') + '. Keep your previous backup.';
 }
 
@@ -4762,8 +4923,11 @@ function previewImport(file) {
         const n = String(rawNotes[tk] || '').trim().slice(0, 80);
         if (n) watchNotes[tk] = n;
       });
-      if (!trades.length) throw new Error('No valid trades in file');
-      _importPayload = { trades, positions, watchlist, watchNotes };
+      const rawBoxes = Array.isArray(data.boxSpreads) ? data.boxSpreads : [];
+      const boxSpreads = rawBoxes.map(normalizeBoxSpread).filter(Boolean);
+      skipped += rawBoxes.length - boxSpreads.length;
+      if (!trades.length && !boxSpreads.length && !positions.length) throw new Error('No valid records in file');
+      _importPayload = { trades, positions, boxSpreads, watchlist, watchNotes };
 
       const active  = trades.filter(t => t.status === 'active').length;
       const closed  = trades.filter(t => t.status !== 'active').length;
@@ -4777,6 +4941,7 @@ function previewImport(file) {
         <div class="import-preview-row"><span class="import-preview-lbl">Active</span><span class="import-preview-val">${active}</span></div>
         <div class="import-preview-row"><span class="import-preview-lbl">Closed / Expired</span><span class="import-preview-val">${closed}</span></div>
         <div class="import-preview-row"><span class="import-preview-lbl">Rolled trades</span><span class="import-preview-val">${rolled}</span></div>
+        ${boxSpreads.length ? `<div class="import-preview-row"><span class="import-preview-lbl">Short box spreads</span><span class="import-preview-val">${boxSpreads.length}</span></div>` : ''}
         ${positions.length ? `<div class="import-preview-row"><span class="import-preview-lbl">Share lots</span><span class="import-preview-val">${positions.length}</span></div>` : ''}
         ${watchlist.length ? `<div class="import-preview-row"><span class="import-preview-lbl">Watchlist</span><span class="import-preview-val">${watchlist.length}</span></div>` : ''}
         ${skipped ? `<div class="import-preview-row"><span class="import-preview-lbl">Skipped (invalid)</span><span class="import-preview-val" style="color:var(--red)">${skipped}</span></div>` : ''}
@@ -4802,16 +4967,19 @@ function confirmImport() {
   if (!_importPayload) return;
   const incoming = _importPayload.trades || [];
   const incomingPos = _importPayload.positions || [];
+  const incomingBoxes = _importPayload.boxSpreads || [];
   const incomingWatch = _importPayload.watchlist || [];
   const incomingNotes = _importPayload.watchNotes || {};
   if (_importMode === 'replace') {
-    save({ trades: incoming, positions: incomingPos,
+    save({ trades: incoming, positions: incomingPos, boxSpreads: incomingBoxes,
            watchlist: incomingWatch, watchNotes: incomingNotes });
   } else {
     // Merge: skip any record whose id already exists
     const current = load();
     const existingIds = new Set(current.trades.map(t => t.id));
     current.trades = current.trades.concat(incoming.filter(t => !existingIds.has(t.id)));
+    const existingBoxes = new Set(loadBoxSpreads(current).map(b => b.id));
+    current.boxSpreads = loadBoxSpreads(current).concat(incomingBoxes.filter(b => !existingBoxes.has(b.id)));
     const existingPos = new Set(loadPositions(current).map(p => p.id));
     current.positions = loadPositions(current).concat(incomingPos.filter(p => !existingPos.has(p.id)));
     const watch = loadWatchlist(current);
