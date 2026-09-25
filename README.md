@@ -58,6 +58,13 @@ Interest**, only in that expiration year. The calendar refreshes while open and
 when returning to the app; reopening after offline days catches up immediately.
 Interest is derived from records, so repeated refreshes cannot book it twice.
 
+Once the entry fields and a positive trade term are valid, a live **Annualized
+Interest Rate** preview appears above Add Box Spread and recalculates on edits.
+Each portfolio box card shows interest cost as `$500.00 (5.00%)`; the percentage
+is the expected annualized rate over the original trade-to-expiration term,
+including for active spreads. Missing dates or zero-day terms show `(—)`.
+These previews do not recognize interest early or change the realized YTD total.
+
 The same YTD box shows the **annualized interest rate** for spreads that expired
 this year: `365 × sum(interest) / sum(credit received × full term days) × 100`.
 For one spread this is `(interest / credit) × (365 / days) × 100`.

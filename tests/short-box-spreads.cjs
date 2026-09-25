@@ -40,12 +40,26 @@ const server = http.createServer((req,res) => {
     assert.equal(await page.locator('#add-batch-link').isVisible(),false);
     assert.equal(await page.locator('#a-box-fields input:visible').count(),4);
     await page.fill('#box-credit','99500'); await page.fill('#box-interest','500');
+    assert.equal(await page.locator('#box-rate-preview').isVisible(),false);
+    await page.fill('#box-expdate','2026-09-26');
+    assert.equal(await page.locator('#box-rate-preview').isVisible(),true);
+    assert.equal(await page.textContent('#box-rate-preview-value'),'183.42%');
+    assert.equal(await page.evaluate(()=>loadBoxSpreads().length),0);
+    await page.fill('#box-interest','0');
+    assert.equal(await page.textContent('#box-rate-preview-value'),'0.00%');
+    await page.fill('#box-credit','0');
+    assert.equal(await page.locator('#box-rate-preview').isVisible(),false);
+    await page.fill('#box-credit','99500');
+    await page.fill('#box-interest','500');
+    await page.fill('#box-expdate','2026-09-25');
+    assert.equal(await page.locator('#box-rate-preview').isVisible(),false);
     await page.fill('#box-expdate','2026-09-26');
     await page.screenshot({path:'/tmp/box-entry.png'});
     await page.click('#add-submit');
     assert.equal(await page.textContent('#box-ytd-rate'),'—');
     assert.equal(await page.textContent('#box-ytd-interest'),'$0.00');
     assert.match(await page.textContent('#box-list'),/Days to Expiry1/);
+    assert.match(await page.textContent('#box-list'),/\$500\.00 \(183\.42%\)/);
     assert.deepEqual(await page.evaluate(()=>weightedStats()),result);
     // Crossing local midnight realizes exactly once, even though UTC is already Sept 26.
     await page.clock.runFor(3000);
@@ -80,7 +94,10 @@ const server = http.createServer((req,res) => {
     }),{weighted:3,future:null,nextYear:null,missing:null,zero:null});
     // Corrections replace the record rather than duplicating interest.
     await page.click('[data-box-edit]');
-    await page.fill('#box-interest','600'); await page.click('#add-submit');
+    assert.equal(await page.textContent('#box-rate-preview-value'),'183.42%');
+    await page.fill('#box-interest','600');
+    assert.equal(await page.textContent('#box-rate-preview-value'),'220.10%');
+    await page.click('#add-submit');
     assert.equal(await page.textContent('#box-ytd-interest'),'$600.00');
     assert.equal(await page.evaluate(()=>loadBoxSpreads().length),1);
     await page.reload();
@@ -129,8 +146,11 @@ const server = http.createServer((req,res) => {
     assert.equal(await page.textContent('#box-ytd-interest'),'$500.00');
     await page.click('[data-box-edit]');
     assert.equal(await page.inputValue('#box-opened'),'');
+    assert.equal(await page.locator('#box-rate-preview').isVisible(),false);
     await page.fill('#box-opened','2025-09-26');
+    assert.equal(await page.textContent('#box-rate-preview-value'),'5.00%');
     await page.click('#add-submit');
+    assert.match(await page.textContent('#box-list'),/\$500\.00 \(5\.00%\)/);
     assert.equal(await page.textContent('#box-ytd-rate'),'5.00%');
     // A legacy backup with no box collection still restores safely.
     await page.evaluate(()=>previewImport(new File([JSON.stringify({version:2,trades:[{
