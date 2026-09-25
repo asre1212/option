@@ -44,6 +44,29 @@ in your browser's localStorage; nothing is sent to a server.
   expiring, raised when you open or return to the app. The same permission carries the
   watchlist's target-yield alert.
 
+## Short box spreads
+
+Use **+ → Box Spread** to enter ticker (defaults to `$SPX`), total credit
+received, total interest cost in dollars, and expiration date. These financing
+records appear in **Short Box Spread** at the bottom of Portfolio, including
+expired entries. Edit/Delete Entry correct recordkeeping mistakes; there is no
+close-early, roll, or manual expiration workflow.
+
+Days to expiry are calendar days and stop at zero. The local expiration date
+marks a spread expired automatically and includes its interest cost in **YTD
+Interest**, only in that expiration year. The calendar refreshes while open and
+when returning to the app; reopening after offline days catches up immediately.
+Interest is derived from records, so repeated refreshes cannot book it twice.
+
+Box spreads live in a separate `boxSpreads` collection. Neither the credit nor
+interest enters realized P&L, overall ROI, committed trading capital, or trading
+analysis. JSON backup/restore includes them (older backups remain supported),
+and Excel export uses a separate Short Box Spreads sheet.
+
+To run the focused browser regression test, install Playwright and Chromium,
+then run `node tests/short-box-spreads.cjs`. The test uses isolated local storage
+and blocks external requests. `TEST_CHROMIUM_PATH` can select an existing browser.
+
 ## The wheel
 
 Selling a put and being assigned is not the end of the trade — it is the middle of
