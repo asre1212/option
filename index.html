@@ -1064,6 +1064,9 @@
             <div class="stat-label">YTD Interest</div>
             <div class="stat-value neu" id="box-ytd-interest">$0.00</div>
             <div class="stat-sub">Interest cost · recognized on expiration</div>
+            <div class="stat-label" style="margin-top:12px">Annualized Interest Rate</div>
+            <div class="stat-value neu" id="box-ytd-rate">—</div>
+            <div class="stat-sub" id="box-ytd-rate-note">Annualized · weighted by credit × days</div>
           </div>
           <div id="box-list"></div>
         </section>
@@ -1529,6 +1532,14 @@
           <label class="fl" for="box-expdate">Expiration Date</label>
           <input class="fi" id="box-expdate" type="date">
         </div>
+        <details id="box-date-details" style="margin-bottom:14px">
+          <summary class="stat-sub" style="cursor:pointer">Trade date · defaults to today</summary>
+          <div class="fg" style="margin-top:10px">
+            <label class="fl" for="box-opened">Trade Date</label>
+            <input class="fi" id="box-opened" type="date">
+            <div class="stat-sub">Used for annualized interest. Set the actual date for older trades.</div>
+          </div>
+        </details>
       </div>
       <button class="sub-btn" id="add-submit" onclick="addTrade()">Add Trade</button>
       <button id="add-batch-link" class="batch-link" onclick="closeOverlay('m-add');openBatchModal()">
