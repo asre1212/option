@@ -645,16 +645,14 @@ function normalizeBoxSpread(raw) {
     id: typeof raw.id === 'string' && /^[a-z0-9_-]{1,40}$/i.test(raw.id) ? raw.id : uid(),
     ticker, creditReceived: Math.round(creditReceived * 100) / 100,
     interest: Math.round(interest * 100) / 100, expDate: raw.expDate,
-    dateOpened: validBoxDate(raw.dateOpened) ? raw.dateOpened : null
+    dateOpened: validBoxDate(raw.dateOpened) ? raw.dateOpened : null,
+    yearEndValues: Object.fromEntries(Object.entries(raw.yearEndValues || {}).filter(([year,value]) =>
+      /^\d{4}$/.test(year) && typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER / 100))
   };
 }
 function boxDaysRemaining(box, today = boxToday()) {
   return Math.max(0, Math.round((Date.parse(box.expDate + 'T00:00:00Z')
     - Date.parse(today + 'T00:00:00Z')) / 86400000));
-}
-function boxInterestYTD(boxes, today = boxToday()) {
-  return Math.round(boxes.filter(b => b.expDate <= today && b.expDate.slice(0,4) === today.slice(0,4))
-    .reduce((sum, b) => sum + b.interest, 0) * 100) / 100;
 }
 // Simple annualized financing rate, weighted by dollars borrowed × days.
 // Missing/zero-length terms make the aggregate unavailable, never partial.
@@ -685,12 +683,80 @@ function updateBoxRatePreview() {
   document.getElementById('box-rate-preview-term').textContent = rate === null ? ''
     : `Expected annualized cost · ${fmtInt(boxTermDays(box))} day${boxTermDays(box) === 1 ? '' : 's'}`;
 }
-function boxRateYTD(boxes, today = boxToday()) {
-  const realized = boxes.filter(b => b.expDate <= today && b.expDate.slice(0,4) === today.slice(0,4));
-  if (!realized.length || realized.some(b => boxTermDays(b) === null)) return null;
-  const creditDays = realized.reduce((sum,b) => sum + b.creditReceived * boxTermDays(b), 0);
-  return creditDays > 0 ? realized.reduce((sum,b) => sum + b.interest,0) * 36500 / creditDays : null;
+// Calendar allocations are planning estimates. Actual MTM uses recorded year-end
+// liability values, with the previous year's mark becoming the new basis.
+function boxYearRows(box, today = boxToday()) {
+  const term = boxTermDays(box);
+  if (term === null) return [];
+  const startYear = Number(box.dateOpened.slice(0,4)), endYear = Number(box.expDate.slice(0,4));
+  const marks = box.yearEndValues || {}, rows = [];
+  let allocated = 0;
+  for (let year = startYear; year <= endYear; year++) {
+    const start = box.dateOpened > `${year}-01-01` ? box.dateOpened : `${year}-01-01`;
+    const end = box.expDate < `${year+1}-01-01` ? box.expDate : `${year+1}-01-01`;
+    const days = Math.max(0, (Date.parse(end+'T00:00:00Z') - Date.parse(start+'T00:00:00Z')) / 86400000);
+    const estimate = year === endYear ? Math.round(box.interest*100)-allocated : Math.round(box.interest*100*days/term);
+    allocated += estimate;
+    const ended = year < Number(today.slice(0,4)) || (year === endYear && box.expDate <= today);
+    const opening = year === startYear ? box.creditReceived : marks[year-1];
+    const closing = year === endYear ? box.creditReceived + box.interest : marks[year];
+    const final = ended && Number.isFinite(opening) && Number.isFinite(closing)
+      ? Math.round((closing-opening)*100)/100 : null;
+    rows.push({year, days, estimate:estimate/100, final, ended});
+  }
+  return rows;
 }
+function boxYearTotals(boxes, today = boxToday()) {
+  const totals = new Map();
+  for (const box of boxes) for (const row of boxYearRows(box,today)) {
+    const total = totals.get(row.year) || {year:row.year, estimate:0, final:0, complete:true, ended:true};
+    total.estimate += row.estimate;
+    total.final += row.final || 0;
+    total.complete = total.complete && row.final !== null;
+    total.ended = total.ended && row.ended;
+    totals.set(row.year,total);
+  }
+  return [...totals.values()].sort((a,b)=>a.year-b.year).map(row=>({...row,
+    estimate:Math.round(row.estimate*100)/100, final:row.complete ? Math.round(row.final*100)/100 : null}));
+}
+function boxYearTable(boxes, actual = false) {
+  const rows = boxYearTotals(boxes);
+  const missing = boxes.some(b=>boxTermDays(b) === null);
+  return (missing ? '<div class="stat-sub">Set the actual trade date on entries with missing or invalid terms before calculating all yearly totals.</div>' : '') +
+    (rows.length ? `<div style="overflow-x:auto"><table style="width:100%;text-align:left;font-size:13px;border-spacing:0 10px">
+    <thead><tr><th>Year</th><th>Est. cost</th>${actual ? '<th>Final MTM cost</th>' : ''}</tr></thead><tbody>
+    ${rows.map(r=>`<tr><td>${r.year}</td><td>${fmtMoney(r.estimate)}</td>${actual ? `<td>${missing ? 'Needs trade dates' : r.final !== null ? fmtMoney(r.final) : r.ended ? 'Needs year-end values' : 'Pending'}</td>` : ''}</tr>`).join('')}
+    </tbody></table></div>` : '');
+}
+function boxAnalysisHTML(boxes = loadBoxSpreads()) {
+  if (!boxes.length) return '';
+  return `<section class="stat-card" style="margin-top:16px" id="box-analysis"><div class="sec-title">Box spreads · by year</div>
+    ${boxYearTable(boxes,true)}
+    <div class="stat-sub">Estimates allocate cost by calendar days. Final MTM cost uses year-end market values; a negative cost is a gain. Kept separate from trading P&amp;L / ROI.</div>
+    <details style="margin-top:12px"><summary>Contracts &amp; year-end values</summary>
+    <div class="stat-sub">Enter the total net debit to close the whole box on the last business day of each completed year, from your broker. Leave unknown values blank.</div>
+    ${boxes.map(b=>`<div style="margin-top:16px"><strong>${esc(b.ticker)} · ${esc(b.expDate)}</strong> · ${b.expDate <= boxToday() ? 'Expired' : 'Open'}
+      ${boxYearRows(b).filter(r=>r.year < Number(b.expDate.slice(0,4)) && r.year < Number(boxToday().slice(0,4))).map(r=>`<label class="fl" style="margin-top:8px">${r.year} year-end value ($)
+      <input class="fi" type="number" min="0" step="0.01" inputmode="decimal" data-box-mark="${esc(b.id)}" data-year="${r.year}" value="${b.yearEndValues?.[r.year] ?? ''}"></label>`).join('')}
+      <button class="act-btn" data-box-edit="${esc(b.id)}">Edit Entry</button>
+      <button class="act-btn red" data-box-delete="${esc(b.id)}">Delete Entry</button></div>`).join('')}
+    </details></section>`;
+}
+document.addEventListener('change', event => {
+  const input = event.target.closest('[data-box-mark]');
+  if (!input) return;
+  const d = load(), box = loadBoxSpreads(d).find(b=>b.id === input.dataset.boxMark);
+  if (!box) return;
+  const value = input.value.trim() === '' ? null : Number(input.value);
+  if (value !== null && (!Number.isFinite(value) || value < 0 || value > Number.MAX_SAFE_INTEGER/100)) {
+    alert('Enter a nonnegative year-end market value, or leave blank.'); return;
+  }
+  box.yearEndValues = {...box.yearEndValues};
+  if (value === null) delete box.yearEndValues[input.dataset.year];
+  else box.yearEndValues[input.dataset.year] = Math.round(value*100)/100;
+  save(d); renderAnalysis(); renderBoxSpreads();
+  document.querySelector('#box-analysis details').open = true;
+});
 let editingBoxId = null;
 function setAddEntryMode(mode) {
   const box = mode === 'box';
@@ -730,7 +796,8 @@ function saveBoxSpread() {
     ticker: document.getElementById('box-ticker').value,
     creditReceived: document.getElementById('box-credit').value,
     interest: document.getElementById('box-interest').value,
-    expDate: expiry, dateOpened: opened
+    expDate: expiry, dateOpened: opened,
+    yearEndValues: loadBoxSpreads().find(b=>b.id === editingBoxId)?.yearEndValues || {}
   });
   if (!box) { alert('Enter a ticker, a credit greater than zero, an interest cost of zero or more, and a valid expiration date.'); return; }
   const d = load();
@@ -742,31 +809,20 @@ function saveBoxSpread() {
   } else d.boxSpreads.push(box);
   save(d);
   closeOverlay('m-add');
-  renderActive(); updateStats();
+  renderActive(); updateStats(); renderAnalysisIfOpen();
 }
 function deleteBoxSpread(id) {
   if (!confirm('Delete this box spread entry? This removes its recorded interest too.')) return;
   const d = load();
   d.boxSpreads = loadBoxSpreads(d).filter(b => b.id !== id);
   save(d);
-  renderActive(); updateStats();
+  renderActive(); updateStats(); renderAnalysisIfOpen();
 }
 function renderBoxSpreads(d = load()) {
   const today = boxToday(), boxes = loadBoxSpreads(d);
-  const active = boxes.filter(b => b.expDate > today).length;
-  document.getElementById('box-count').textContent = `${active} active · ${boxes.length - active} expired`;
-  document.getElementById('box-ytd-interest').textContent = fmtMoney(boxInterestYTD(boxes, today));
-  const rate = boxRateYTD(boxes, today);
-  document.getElementById('box-ytd-rate').textContent = rate === null ? '—' : fmtPct(rate);
-  const incomplete = boxes.some(b => b.expDate <= today && b.expDate.slice(0,4) === today.slice(0,4) && boxTermDays(b) === null);
-  document.getElementById('box-ytd-rate-note').textContent = incomplete
-    ? 'Set a trade date before expiration on each expired entry to calculate the rate.'
-    : 'Annualized · weighted by credit × days';
-  const sorted = [...boxes].sort((a,b) => {
-    const pastA = a.expDate <= today, pastB = b.expDate <= today;
-    return Number(pastA) - Number(pastB)
-      || (pastA ? b.expDate.localeCompare(a.expDate) : a.expDate.localeCompare(b.expDate));
-  });
+  const sorted = boxes.filter(b => b.expDate > today).sort((a,b)=>a.expDate.localeCompare(b.expDate));
+  document.getElementById('box-count').textContent = `${sorted.length} open`;
+  document.getElementById('box-yearly').innerHTML = boxYearTable(sorted);
   document.getElementById('box-list').innerHTML = sorted.length ? sorted.map(b => {
     const expired = b.expDate <= today;
     const expectedRate = boxAnnualizedRate(b);
@@ -780,14 +836,14 @@ function renderBoxSpreads(d = load()) {
           <div class="metric"><div class="m-label">Expiration</div><div class="m-val">${esc(b.expDate)}</div></div>
           <div class="metric"><div class="m-label">Days to Expiry</div><div class="m-val">${boxDaysRemaining(b,today)}</div></div>
         </div>
-        <div class="stat-sub">${expired ? 'Interest realized on ' : 'Interest will be realized on '}${esc(b.expDate)}</div>
+        <div class="stat-sub">Annual cost estimates above · final yearly MTM in Analysis</div>
       </div>
       <div class="tc-actions">
         <button class="act-btn" data-box-edit="${esc(b.id)}">Edit Entry</button>
         <button class="act-btn red" data-box-delete="${esc(b.id)}">Delete Entry</button>
       </div>
     </div>`;
-  }).join('') : '<div class="empty-txt" style="padding:16px 0">No short box spreads yet. Tap + and choose Box Spread.</div>';
+  }).join('') : '<div class="empty-txt" style="padding:16px 0">No open box spreads. Past contracts and yearly totals are in Analysis.</div>';
 }
 document.addEventListener('click', event => {
   const edit = event.target.closest('[data-box-edit]');
@@ -798,10 +854,10 @@ document.addEventListener('click', event => {
 let lastBoxDay = boxToday();
 function refreshBoxCalendar() {
   const day = boxToday();
-  if (day !== lastBoxDay) { lastBoxDay = day; renderBoxSpreads(); }
+  if (day !== lastBoxDay) { lastBoxDay = day; renderBoxSpreads(); renderAnalysisIfOpen(); }
 }
 setInterval(refreshBoxCalendar, 1000);
-window.addEventListener('pageshow', () => renderBoxSpreads());
+window.addEventListener('pageshow', () => { renderBoxSpreads(); renderAnalysisIfOpen(); });
 
 /* ═══════════════════════════════════════
    BATCH HISTORIC ENTRY
@@ -2312,7 +2368,7 @@ function renderAnalysis() {
   const lots   = loadPositions(d).filter(p => p.status === 'open');
   const el     = document.getElementById('analysis-content');
   if (!items.length && !active.length && !lots.length) {
-    el.innerHTML = `<div class="empty"><div class="empty-txt">No trades to analyze yet</div></div>`;
+    el.innerHTML = boxAnalysisHTML(loadBoxSpreads(d)) || `<div class="empty"><div class="empty-txt">No trades to analyze yet</div></div>`;
     return;
   }
 
@@ -2660,7 +2716,7 @@ function renderAnalysis() {
       </div>
     </div>`;
   });
-  el.innerHTML = html;
+  el.innerHTML = html + boxAnalysisHTML(loadBoxSpreads(d));
 }
 
 /* ═══════════════════════════════════════
@@ -4597,12 +4653,12 @@ async function exportExcel() {
   // Financing gets its own sheet and never enters trading performance totals.
   const boxes = loadBoxSpreads(), boxDay = boxToday();
   const boxRows = [
-    ['Ticker','Credit Received','Interest Cost','Expiration','Days to Expiry','Status','Realized Interest','Trade Date','Term Days'],
+    ['Ticker','Credit Received','Interest Cost','Expiration','Days to Expiry','Status','Settled Total Cost','Trade Date','Term Days'],
     ...boxes.map(b => [b.ticker,b.creditReceived,b.interest,b.expDate,
       boxDaysRemaining(b,boxDay),b.expDate <= boxDay ? 'Expired' : 'Active',
       b.expDate <= boxDay ? b.interest : 0,b.dateOpened || '',boxTermDays(b)]),
-    ['YTD Interest', '', boxInterestYTD(boxes,boxDay)],
-    ['YTD Annualized Interest (%)', '', boxRateYTD(boxes,boxDay)]
+    ['Year', 'Estimated Cost', 'Final MTM Cost'],
+    ...boxYearTotals(boxes,boxDay).map(r=>[r.year,r.estimate,boxes.some(b=>boxTermDays(b) === null) ? 'Needs trade dates' : r.final ?? (r.ended ? 'Needs year-end values' : 'Pending')])
   ];
   const wsBox = XLSX.utils.aoa_to_sheet(boxRows);
   wsBox['!cols'] = colW([28,18,18,14,16,12,18,14,12]);
@@ -4762,7 +4818,7 @@ async function checkExpiryReminders(force) {
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    renderBoxSpreads();
+    renderBoxSpreads(); renderAnalysisIfOpen();
     renderOnlineState(); checkExpiryReminders(); checkMarketSchedule();
   }
 });
