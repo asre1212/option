@@ -49,7 +49,10 @@ in your browser's localStorage; nothing is sent to a server.
 Use **+ → Box Spread** to enter ticker (defaults to `$SPX`), total credit
 received, total interest cost in dollars, and expiration date. These financing
 records appear in **Short Box Spread** at the bottom of Portfolio while open.
-Expired contracts remain in **Analysis → Box spreads → Contracts & year-end values**.
+Each open position has a full PR #24-style card above the yearly summary, with
+credit, interest cost (annualized %), expiration, days remaining and edit/delete.
+Analysis shows full individual cards for both open and expired contracts, visible
+without expanding a disclosure; only the year-end value inputs are collapsible.
 There is no early close or roll workflow. Expiration is derived from the local
 calendar date; daily refresh removes matured records from Portfolio.
 

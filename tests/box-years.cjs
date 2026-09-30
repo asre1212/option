@@ -45,4 +45,15 @@ assert.deepEqual(run('normalizeBoxSpread(backup).yearEndValues'),{'2026':10300,'
 const input={dataset:{boxMark:'b',year:'2026'},value:'0'};
 listeners.change({target:{closest:()=>input}});assert.equal(data.boxSpreads[0].yearEndValues[2026],0);
 input.value='';listeners.change({target:{closest:()=>input}});assert.equal(data.boxSpreads[0].yearEndValues[2026],undefined);
-console.log('PASS: 19 accounting, rendering, persistence and validation checks.');
+const card = run('boxPositionCard(box,"2026-09-30")');
+for (const label of ['Credit Received','Interest Cost','Expiration','Days to Expiry','data-box-edit="b"','data-box-delete="b"']) assert.ok(card.includes(label));
+assert.match(card,/Expected annualized interest rate/);
+data.boxSpreads=[box,{...box,id:'second',creditReceived:20000}, {...box,id:'expired',dateOpened:'2024-07-01',expDate:'2025-07-01'}];
+vm.runInContext('renderBoxSpreads()',ctx);
+assert.equal((node('box-list').innerHTML.match(/class="trade-card"/g)||[]).length,2);
+const analysis = run('boxAnalysisHTML()');
+assert.equal((analysis.match(/class="trade-card"/g)||[]).length,3);
+assert.ok(analysis.indexOf('class="trade-card"') < analysis.indexOf('<details'));
+const html = fs.readFileSync(require('node:path').join(__dirname,'../index.html'),'utf8');
+assert.ok(html.indexOf('id="box-list"') < html.indexOf('id="box-yearly"'));
+console.log('PASS: accounting, persistence, full per-position cards, annualized rates, card counts, open-only Portfolio and visible Analysis history.');
