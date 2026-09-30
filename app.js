@@ -733,14 +733,15 @@ function boxAnalysisHTML(boxes = loadBoxSpreads()) {
   return `<section class="stat-card" style="margin-top:16px" id="box-analysis"><div class="sec-title">Box spreads · by year</div>
     ${boxYearTable(boxes,true)}
     <div class="stat-sub">Estimates allocate cost by calendar days. Final MTM cost uses year-end market values; a negative cost is a gain. Kept separate from trading P&amp;L / ROI.</div>
-    <details style="margin-top:12px"><summary>Contracts &amp; year-end values</summary>
-    <div class="stat-sub">Enter the total net debit to close the whole box on the last business day of each completed year, from your broker. Leave unknown values blank.</div>
-    ${boxes.map(b=>`<div style="margin-top:16px"><strong>${esc(b.ticker)} · ${esc(b.expDate)}</strong> · ${b.expDate <= boxToday() ? 'Expired' : 'Open'}
+    <div class="sec-hdr"><span class="sec-title">Individual Positions</span></div>
+    ${[...boxes].sort((a,b)=>Number(a.expDate <= boxToday())-Number(b.expDate <= boxToday()) || a.expDate.localeCompare(b.expDate)).map(b=>`
+      ${boxPositionCard(b)}
+      ${boxYearRows(b).some(r=>r.year < Number(b.expDate.slice(0,4)) && r.year < Number(boxToday().slice(0,4))) ? `<details data-box-values="${esc(b.id)}" style="margin-bottom:16px"><summary>Year-end values · ${esc(b.ticker)} · ${esc(b.expDate)}</summary>
+      <div class="stat-sub">Enter the broker's total net debit to close this box on the last business day of the year. Leave unknown values blank.</div>
       ${boxYearRows(b).filter(r=>r.year < Number(b.expDate.slice(0,4)) && r.year < Number(boxToday().slice(0,4))).map(r=>`<label class="fl" style="margin-top:8px">${r.year} year-end value ($)
       <input class="fi" type="number" min="0" step="0.01" inputmode="decimal" data-box-mark="${esc(b.id)}" data-year="${r.year}" value="${b.yearEndValues?.[r.year] ?? ''}"></label>`).join('')}
-      <button class="act-btn" data-box-edit="${esc(b.id)}">Edit Entry</button>
-      <button class="act-btn red" data-box-delete="${esc(b.id)}">Delete Entry</button></div>`).join('')}
-    </details></section>`;
+      </details>` : ''}`).join('')}
+    </section>`;
 }
 document.addEventListener('change', event => {
   const input = event.target.closest('[data-box-mark]');
@@ -755,7 +756,8 @@ document.addEventListener('change', event => {
   if (value === null) delete box.yearEndValues[input.dataset.year];
   else box.yearEndValues[input.dataset.year] = Math.round(value*100)/100;
   save(d); renderAnalysis(); renderBoxSpreads();
-  document.querySelector('#box-analysis details').open = true;
+  const details = document.querySelector(`[data-box-values="${box.id}"]`);
+  if (details) details.open = true;
 });
 let editingBoxId = null;
 function setAddEntryMode(mode) {
@@ -818,12 +820,7 @@ function deleteBoxSpread(id) {
   save(d);
   renderActive(); updateStats(); renderAnalysisIfOpen();
 }
-function renderBoxSpreads(d = load()) {
-  const today = boxToday(), boxes = loadBoxSpreads(d);
-  const sorted = boxes.filter(b => b.expDate > today).sort((a,b)=>a.expDate.localeCompare(b.expDate));
-  document.getElementById('box-count').textContent = `${sorted.length} open`;
-  document.getElementById('box-yearly').innerHTML = boxYearTable(sorted);
-  document.getElementById('box-list').innerHTML = sorted.length ? sorted.map(b => {
+function boxPositionCard(b, today = boxToday()) {
     const expired = b.expDate <= today;
     const expectedRate = boxAnnualizedRate(b);
     return `<div class="trade-card">
@@ -836,14 +833,21 @@ function renderBoxSpreads(d = load()) {
           <div class="metric"><div class="m-label">Expiration</div><div class="m-val">${esc(b.expDate)}</div></div>
           <div class="metric"><div class="m-label">Days to Expiry</div><div class="m-val">${boxDaysRemaining(b,today)}</div></div>
         </div>
-        <div class="stat-sub">Annual cost estimates above · final yearly MTM in Analysis</div>
+        <div class="stat-sub">Yearly totals shown separately · final MTM in Analysis</div>
       </div>
       <div class="tc-actions">
         <button class="act-btn" data-box-edit="${esc(b.id)}">Edit Entry</button>
         <button class="act-btn red" data-box-delete="${esc(b.id)}">Delete Entry</button>
       </div>
     </div>`;
-  }).join('') : '<div class="empty-txt" style="padding:16px 0">No open box spreads. Past contracts and yearly totals are in Analysis.</div>';
+
+}
+function renderBoxSpreads(d = load()) {
+  const today = boxToday(), boxes = loadBoxSpreads(d);
+  const sorted = boxes.filter(b => b.expDate > today).sort((a,b)=>a.expDate.localeCompare(b.expDate));
+  document.getElementById('box-count').textContent = `${sorted.length} open`;
+  document.getElementById('box-yearly').innerHTML = boxYearTable(sorted);
+  document.getElementById('box-list').innerHTML = sorted.length ? sorted.map(b => boxPositionCard(b,today)).join('') : '<div class="empty-txt" style="padding:16px 0">No open box spreads. Past contracts and yearly totals are in Analysis.</div>';
 }
 document.addEventListener('click', event => {
   const edit = event.target.closest('[data-box-edit]');
