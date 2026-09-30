@@ -48,38 +48,35 @@ in your browser's localStorage; nothing is sent to a server.
 
 Use **+ → Box Spread** to enter ticker (defaults to `$SPX`), total credit
 received, total interest cost in dollars, and expiration date. These financing
-records appear in **Short Box Spread** at the bottom of Portfolio, including
-expired entries. Edit/Delete Entry correct recordkeeping mistakes; there is no
-close-early, roll, or manual expiration workflow.
+records appear in **Short Box Spread** at the bottom of Portfolio while open.
+Expired contracts remain in **Analysis → Box spreads → Contracts & year-end values**.
+There is no early close or roll workflow. Expiration is derived from the local
+calendar date; daily refresh removes matured records from Portfolio.
 
-Days to expiry are calendar days and stop at zero. The local expiration date
-marks a spread expired automatically and includes its interest cost in **YTD
-Interest**, only in that expiration year. The calendar refreshes while open and
-when returning to the app; reopening after offline days catches up immediately.
-Interest is derived from records, so repeated refreshes cannot book it twice.
+**Interest by year** replaces YTD: total cost is allocated by calendar days over
+trade date through expiration, with cents reconciled in the final year. These
+are planning estimates, not tax MTM values. The per-contract annualized rate
+and live entry preview remain unchanged. Missing/invalid trade dates are flagged
+rather than guessed; edit the actual trade date to include those contracts.
 
-Once the entry fields and a positive trade term are valid, a live **Annualized
-Interest Rate** preview appears above Add Box Spread and recalculates on edits.
-Each portfolio box card shows interest cost as `$500.00 (5.00%)`; the percentage
-is the expected annualized rate over the original trade-to-expiration term,
-including for active spreads. Missing dates or zero-day terms show `(—)`.
-These previews do not recognize interest early or change the realized YTD total.
+Analysis shows all years and contracts, including expired ones. For each completed
+year before expiration, enter the broker's year-end net debit to close the entire
+box. Final annual MTM cost = ending liability minus beginning liability. Opening
+credit is the first basis; each year-end mark is the next year's basis; maturity
+uses credit plus total interest as the settlement liability. Negative costs are
+gains. Missing marks leave affected yearly totals pending, never partially final.
 
-The same YTD box shows the **annualized interest rate** for spreads that expired
-this year: `365 × sum(interest) / sum(credit received × full term days) × 100`.
-For one spread this is `(interest / credit) × (365 / days) × 100`.
-The term is trade date through expiration, not the remaining countdown or only
-the days falling in the current year. Trade date defaults to the local entry
-date and can be corrected under the collapsed Trade date control. Edits and
-backups preserve it. Existing records without a trade date keep their dollar
-interest, but the rate shows an em dash until all realized terms are known and
-positive; dates are never guessed. No realized entries also shows an em dash.
+Marks persist across edits, JSON backup/restore and merge. Excel includes yearly
+estimates and final costs on the separate Short Box Spreads sheet. Box financing
+remains excluded from ordinary trading P&L, ROI and committed capital.
 
-Box spreads live in a separate `boxSpreads` collection. Neither the credit nor
-interest enters realized P&L, overall ROI, committed trading capital, or trading
-analysis. JSON backup/restore includes them (older backups remain supported),
-and Excel export uses a separate Short Box Spreads sheet.
+Tax references: [IRS Publication 550](https://www.irs.gov/publications/p550),
+[Form 6781 and instructions](https://www.irs.gov/pub/irs-pdf/f6781.pdf),
+and [26 USC 1256](https://www.law.cornell.edu/uscode/text/26/1256).
+Section 1256 generally uses last-business-day fair market value and resets basis,
+not a day-count allocation. Reconcile recorded values with broker tax statements.
 
+Run `node tests/box-years.cjs` for dependency-free accounting and persistence checks.
 To run the focused browser regression test, install Playwright and Chromium,
 then run `node tests/short-box-spreads.cjs`. The test uses isolated local storage
 and blocks external requests. `TEST_CHROMIUM_PATH` can select an existing browser.
