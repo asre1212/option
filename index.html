@@ -706,6 +706,19 @@
     .vs-exec-row-wrap.show{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
 
     /* ── DATA BACKUP ── */
+    .notes-section{margin-top:28px;border:1px solid var(--border);border-radius:12px;background:var(--card)}
+    .notes-section summary{padding:16px;font-size:13px;font-weight:600;cursor:pointer}
+    .notes-body{padding:0 16px 16px}
+    .notes-toolbar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+    .notes-toolbar button{font:inherit;font-size:12px;min-height:36px;padding:6px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);cursor:pointer}
+    .notes-toolbar button[aria-pressed="true"]{background:var(--blue-dim);border-color:var(--blue)}
+    .notes-editor{min-height:150px;padding:12px;border:1px solid var(--border);border-radius:8px;font-size:13px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;outline:none}
+    .notes-editor:focus{border-color:var(--blue)}
+    .notes-editor:empty:before{content:attr(data-placeholder);color:var(--text3);pointer-events:none}
+    .notes-editor ol,.notes-editor ul{padding-left:2em}
+    .notes-editor ol[type="a"]{list-style-type:lower-alpha}
+    .notes-editor ol[type="A"]{list-style-type:upper-alpha}
+    .notes-help,.notes-status{margin-top:8px;font-size:10px;color:var(--text2);line-height:1.5}
     .backup-section{margin-top:28px}
     .backup-hdr{
       display:flex;align-items:center;gap:8px;
@@ -1346,6 +1359,20 @@
           </button>
         </div>
 
+        <details class="notes-section" id="scan-notes">
+          <summary>Notes</summary>
+          <div class="notes-body">
+            <div class="notes-toolbar" role="toolbar" aria-label="Notes formatting">
+              <button type="button" data-notes-command="bold" aria-label="Bold" aria-pressed="false"><b>B</b></button>
+              <button type="button" data-notes-command="underline" aria-label="Underline" aria-pressed="false"><u>U</u></button>
+              <button type="button" data-notes-command="plain">Regular text</button>
+            </div>
+            <div id="scan-notes-editor" class="notes-editor" contenteditable="true" role="textbox" aria-label="Notes" aria-multiline="true" aria-describedby="scan-notes-help" data-placeholder="Write your notes here…"></div>
+            <div class="notes-help" id="scan-notes-help">Notes save automatically. Start a line with 1.), 1. or a. followed by a space to indent a list. Enter continues the list; Enter on an empty item returns to regular text.</div>
+            <div class="notes-status" id="scan-notes-status" role="status" aria-live="polite"></div>
+          </div>
+        </details>
+
         <!-- ── DATA BACKUP ── -->
         <div class="backup-section">
           <div class="backup-hdr">
@@ -1730,7 +1757,7 @@
         </button>
       </div>
       <div class="rc-warn" id="import-replace-warn" style="display:none">
-        ⚠ Replace will permanently delete all your current trades before importing.
+        ⚠ Replace will permanently delete all your current data, including Notes, before importing.
       </div>
       <button class="sub-btn" onclick="confirmImport()">Import Now</button>
     </div>

@@ -4865,6 +4865,143 @@ function hardRefresh() {
    EXPORT / IMPORT
 ═══════════════════════════════════════ */
 
+// Notes contain only text, basic emphasis and lists. Never restore arbitrary
+// markup from a backup (or paste) into the editable surface.
+function sanitizeScanNotes(html) {
+  const source = document.createElement('template');
+  source.innerHTML = typeof html === 'string' ? html : '';
+  const clean = document.createElement('div');
+  const allowed = new Set(['B','STRONG','U','BR','DIV','P','OL','UL','LI']);
+  function copy(node, parent) {
+    if (node.nodeType === 3) { parent.appendChild(document.createTextNode(node.textContent)); return; }
+    if (node.nodeType !== 1 || ['SCRIPT','STYLE','IFRAME','OBJECT','SVG','MATH'].includes(node.tagName)) return;
+    let target = parent;
+    if (allowed.has(node.tagName)) {
+      target = document.createElement(node.tagName.toLowerCase());
+      if (node.tagName === 'OL') {
+        if (['a','A','1'].includes(node.getAttribute('type'))) target.setAttribute('type', node.getAttribute('type'));
+        const start = node.getAttribute('start');
+        if (/^[1-9]\d{0,5}$/.test(start || '')) target.setAttribute('start', start);
+      }
+      parent.appendChild(target);
+    }
+    // WebKit may represent emphasis with spans instead of B/U elements.
+    if (node.tagName === 'SPAN') {
+      if (node.style.fontWeight === 'bold' || Number(node.style.fontWeight) >= 600) {
+        const bold = document.createElement('b'); target.appendChild(bold); target = bold;
+      }
+      if (node.style.textDecoration.includes('underline')) {
+        const underline = document.createElement('u'); target.appendChild(underline); target = underline;
+      }
+    }
+    Array.from(node.childNodes).forEach(child => copy(child, target));
+  }
+  Array.from(source.content.childNodes).forEach(node => copy(node, clean));
+  return clean.innerHTML;
+}
+
+function renderScanNotes() {
+  const editor = document.getElementById('scan-notes-editor');
+  if (editor) editor.innerHTML = sanitizeScanNotes(load().scanNotes);
+}
+
+function saveScanNotes() {
+  const editor = document.getElementById('scan-notes-editor');
+  const status = document.getElementById('scan-notes-status');
+  try {
+    const d = load();
+    d.scanNotes = sanitizeScanNotes(editor.innerHTML);
+    save(d);
+    status.textContent = 'Saved on this device';
+  } catch (_) {
+    status.textContent = 'Could not save notes. Keep this page open and copy your text before leaving.';
+  }
+}
+
+function autoFormatScanNotes() {
+  const editor = document.getElementById('scan-notes-editor');
+  const selection = window.getSelection();
+  if (!selection.rangeCount || !selection.isCollapsed || !editor.contains(selection.anchorNode)) return;
+  const caret = selection.getRangeAt(0);
+  let block = caret.startContainer.nodeType === 1 ? caret.startContainer : caret.startContainer.parentElement;
+  if (block.closest('li')) return;
+  while (block !== editor && !['DIV','P'].includes(block.tagName)) block = block.parentElement;
+  const prefix = document.createRange();
+  prefix.selectNodeContents(block);
+  prefix.setEnd(caret.startContainer, caret.startOffset);
+  const match = prefix.toString().match(/^(\d{1,6}|[a-zA-Z])(?:\.\)|\.|\))\s$/);
+  if (!match) return;
+  const marker = match[1];
+  prefix.deleteContents();
+  // Build a separate list so browsers cannot merge it with earlier notes
+  // and change their numbering when switching between numeric and lettered lists.
+  const list = document.createElement('ol');
+  const item = document.createElement('li');
+  const alpha = /^[a-zA-Z]$/.test(marker);
+  list.setAttribute('type', alpha ? (marker === marker.toLowerCase() ? 'a' : 'A') : '1');
+  list.setAttribute('start', alpha ? String(marker.toLowerCase().charCodeAt(0) - 96) : String(Math.max(1, Number(marker))));
+  while (block.firstChild) item.appendChild(block.firstChild);
+  if (!item.textContent) item.appendChild(document.createElement('br'));
+  list.appendChild(item);
+  if (block === editor) editor.appendChild(list);
+  else block.replaceWith(list);
+  const nextCaret = document.createRange();
+  nextCaret.selectNodeContents(item);
+  nextCaret.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(nextCaret);
+}
+
+function initScanNotes() {
+  const editor = document.getElementById('scan-notes-editor');
+  if (!editor) return;
+  renderScanNotes();
+  document.execCommand('styleWithCSS', false, false);
+  let savedRange = null;
+  const buttons = document.querySelectorAll('[data-notes-command]');
+  document.addEventListener('selectionchange', () => {
+    const selection = window.getSelection();
+    if (!selection.rangeCount || !editor.contains(selection.anchorNode) || !editor.contains(selection.focusNode)) return;
+    savedRange = selection.getRangeAt(0).cloneRange();
+    buttons.forEach(button => {
+      if (button.dataset.notesCommand !== 'plain') button.setAttribute('aria-pressed', String(document.queryCommandState(button.dataset.notesCommand)));
+    });
+  });
+  buttons.forEach(button => {
+    button.addEventListener('mousedown', event => event.preventDefault());
+    button.addEventListener('click', () => {
+      editor.focus();
+      if (savedRange && editor.contains(savedRange.startContainer) && editor.contains(savedRange.endContainer)) {
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(savedRange);
+      }
+      const command = button.dataset.notesCommand;
+      if (command === 'plain') {
+        document.execCommand('removeFormat', false);
+        ['bold','underline'].forEach(format => {
+          if (document.queryCommandState(format)) document.execCommand(format, false);
+        });
+      } else document.execCommand(command, false);
+      saveScanNotes();
+    });
+  });
+  editor.addEventListener('input', event => {
+    if (event.isComposing) return;
+    autoFormatScanNotes();
+    saveScanNotes();
+  });
+  editor.addEventListener('compositionend', () => { autoFormatScanNotes(); saveScanNotes(); });
+  // Plain-text paste avoids importing fonts, scripts or unexpected formatting.
+  editor.addEventListener('paste', event => {
+    event.preventDefault();
+    document.execCommand('insertText', false, event.clipboardData.getData('text/plain'));
+    autoFormatScanNotes();
+    saveScanNotes();
+  });
+  editor.addEventListener('drop', event => event.preventDefault());
+}
+
 function exportData() {
   const d = load();
   const payload = {
@@ -4875,7 +5012,8 @@ function exportData() {
     positions: loadPositions(d),
     boxSpreads: loadBoxSpreads(d),
     watchlist: loadWatchlist(d),
-    watchNotes: loadWatchNotes(d)
+    watchNotes: loadWatchNotes(d),
+    scanNotes: sanitizeScanNotes(d.scanNotes)
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url  = URL.createObjectURL(blob);
@@ -4907,7 +5045,8 @@ function verifyBackup(payload, d) {
     boxes = (parsed.boxSpreads || []).map(normalizeBoxSpread).filter(Boolean).length;
   } catch (e) { err = e.message; }
   const wantT = d.trades.length, wantP = loadPositions(d).length;
-  const ok = !err && restored === wantT && positions === wantP && boxes === loadBoxSpreads(d).length;
+  const ok = !err && restored === wantT && positions === wantP && boxes === loadBoxSpreads(d).length
+    && sanitizeScanNotes(payload.scanNotes) === sanitizeScanNotes(d.scanNotes);
   el.className   = 'opt-row-sub' + (ok ? '' : ' ');
   el.style.color = ok ? 'var(--green)' : 'var(--red)';
   el.textContent = ok
@@ -5042,8 +5181,9 @@ function previewImport(file) {
       const rawBoxes = Array.isArray(data.boxSpreads) ? data.boxSpreads : [];
       const boxSpreads = rawBoxes.map(normalizeBoxSpread).filter(Boolean);
       skipped += rawBoxes.length - boxSpreads.length;
-      if (!trades.length && !boxSpreads.length && !positions.length) throw new Error('No valid records in file');
-      _importPayload = { trades, positions, boxSpreads, watchlist, watchNotes };
+      const scanNotes = sanitizeScanNotes(data.scanNotes);
+      if (!trades.length && !boxSpreads.length && !positions.length && !scanNotes.trim()) throw new Error('No valid records in file');
+      _importPayload = { trades, positions, boxSpreads, watchlist, watchNotes, scanNotes };
 
       const active  = trades.filter(t => t.status === 'active').length;
       const closed  = trades.filter(t => t.status !== 'active').length;
@@ -5060,6 +5200,7 @@ function previewImport(file) {
         ${boxSpreads.length ? `<div class="import-preview-row"><span class="import-preview-lbl">Short box spreads</span><span class="import-preview-val">${boxSpreads.length}</span></div>` : ''}
         ${positions.length ? `<div class="import-preview-row"><span class="import-preview-lbl">Share lots</span><span class="import-preview-val">${positions.length}</span></div>` : ''}
         ${watchlist.length ? `<div class="import-preview-row"><span class="import-preview-lbl">Watchlist</span><span class="import-preview-val">${watchlist.length}</span></div>` : ''}
+        ${scanNotes ? '<div class="import-preview-row"><span class="import-preview-lbl">Notes</span><span class="import-preview-val">Included (merge keeps existing notes)</span></div>' : ''}
         ${skipped ? `<div class="import-preview-row"><span class="import-preview-lbl">Skipped (invalid)</span><span class="import-preview-val" style="color:var(--red)">${skipped}</span></div>` : ''}
       `;
       setImportMode('merge');
@@ -5088,7 +5229,7 @@ function confirmImport() {
   const incomingNotes = _importPayload.watchNotes || {};
   if (_importMode === 'replace') {
     save({ trades: incoming, positions: incomingPos, boxSpreads: incomingBoxes,
-           watchlist: incomingWatch, watchNotes: incomingNotes });
+           watchlist: incomingWatch, watchNotes: incomingNotes, scanNotes: _importPayload.scanNotes || '' });
   } else {
     // Merge: skip any record whose id already exists
     const current = load();
@@ -5102,10 +5243,12 @@ function confirmImport() {
     current.watchlist = watch.concat(incomingWatch.filter(tk => !watch.includes(tk))).slice(0, MAX_WATCH);
     // A note already on this device wins; the backup only fills the gaps
     current.watchNotes = { ...incomingNotes, ...loadWatchNotes(current) };
+    if (!current.scanNotes) current.scanNotes = _importPayload.scanNotes || '';
     save(current);
   }
   closeOverlay('m-import');
   _importPayload = null;
+  renderScanNotes();
   renderActive();
   updateStats();
   renderWatchlist();
@@ -5689,6 +5832,7 @@ if (navigator.storage && navigator.storage.persist) {
   navigator.storage.persist().catch(() => {});
 }
 
+initScanNotes();
 renderActive();
 updateStats();
 updateLastExportLabel();

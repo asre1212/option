@@ -34,6 +34,11 @@ in your browser's localStorage; nothing is sent to a server.
   trades side by side.
 - **Scan** — OCR brokerage screenshots (Tesseract.js, in-browser) into pre-filled
   trade cards for review before saving.
+- **Notes** — a section before Data Backup in Scan, collapsed to its header on
+  startup. Expand to edit the full text with bold, underline or regular text.
+  Type `1.) `, `1. ` or `a. ` at the start of a paragraph to create an indented
+  list. Notes save automatically on this device and travel in JSON backups;
+  merge keeps existing Notes, while replace restores the backup's Notes.
 - **Batch entry** — bulk-enter historic trades that were never logged, either as
   quick rows or pasted straight from a spreadsheet. See below.
 - **Backup** — export/import JSON backups (validated on import; watchlist and its notes
