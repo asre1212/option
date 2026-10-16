@@ -8,12 +8,12 @@
    connection, once each has been fetched successfully one time.
 ───────────────────────────────────────── */
 
-const CACHE_VERSION  = 'options-tracker-v11';
+const CACHE_VERSION  = 'options-tracker-v12';
 const RUNTIME_CACHE  = 'options-tracker-runtime-v1';
 const CACHE_ASSETS   = [
   './',
   './index.html',
-  './app.js',
+  './app.js?v=20261016-total-due',
   './options-tracker.html',
   './manifest.json',
   './icon.svg'
@@ -83,7 +83,7 @@ self.addEventListener('fetch', event => {
 
   // Same-origin app shell: network first, cache fallback.
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: 'no-cache' })
       .then(networkResponse => {
         // Cache a fresh copy on every successful network hit
         if (networkResponse && networkResponse.ok) {
@@ -120,15 +120,18 @@ self.addEventListener('message', event => {
   // URLs, and dropping them would cost the app its offline font and
   // libraries until the next time each is downloaded again.
   if (event.data === 'CLEAR_AND_RELOAD') {
-    caches.delete(CACHE_VERSION).then(() => {
-      // Re-cache fresh copies in the background; offline this just fails,
-      // and the reload below is then served by whatever is already cached.
-      caches.open(CACHE_VERSION)
-        .then(cache => cache.addAll(CACHE_ASSETS))
-        .catch(() => {});
-      // Tell the calling tab it's safe to reload
+    event.waitUntil((async () => {
+      // Fetch everything before replacing the offline shell. Bypass the HTTP
+      // cache too: deleting Cache Storage alone does not force fresh scripts.
+      const responses = await Promise.all(CACHE_ASSETS.map(async path => {
+        const response = await fetch(new URL(path, self.location.href), { cache: 'reload' });
+        if (!response.ok) throw new Error('App update failed: ' + path);
+        return response;
+      }));
+      const cache = await caches.open(CACHE_VERSION);
+      await Promise.all(CACHE_ASSETS.map((path,index) => cache.put(path, responses[index])));
       if (event.source) event.source.postMessage('READY_TO_RELOAD');
-    });
+    })().catch(() => {}));
   }
 
   // Manual cache bust (e.g. after a GitHub Pages push) — full clean,
