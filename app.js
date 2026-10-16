@@ -721,11 +721,22 @@ function boxYearTotals(boxes, today = boxToday()) {
 }
 function boxYearTable(boxes, actual = false) {
   const rows = boxYearTotals(boxes);
+  // Repayment is due at maturity, independently of interest allocation.
+  const dueByYear = new Map();
+  if (!actual) {
+    for (const box of boxes) {
+      const year = Number(box.expDate.slice(0,4));
+      const cents = Math.round(box.creditReceived*100) + Math.round(box.interest*100);
+      dueByYear.set(year, (dueByYear.get(year) || 0) + cents);
+      if (!rows.some(row=>row.year === year)) rows.push({year, estimate:null});
+    }
+    rows.sort((a,b)=>a.year-b.year);
+  }
   const missing = boxes.some(b=>boxTermDays(b) === null);
   return (missing ? '<div class="stat-sub">Set the actual trade date on entries with missing or invalid terms before calculating all yearly totals.</div>' : '') +
     (rows.length ? `<div style="overflow-x:auto"><table style="width:100%;text-align:left;font-size:13px;border-spacing:0 10px">
-    <thead><tr><th>Year</th><th>Est. cost</th>${actual ? '<th>Final MTM cost</th>' : ''}</tr></thead><tbody>
-    ${rows.map(r=>`<tr><td>${r.year}</td><td>${fmtMoney(r.estimate)}</td>${actual ? `<td>${missing ? 'Needs trade dates' : r.final !== null ? fmtMoney(r.final) : r.ended ? 'Needs year-end values' : 'Pending'}</td>` : ''}</tr>`).join('')}
+    <thead><tr><th>Year</th><th>Est. cost</th>${actual ? '<th>Final MTM cost</th>' : '<th>Total due by year</th>'}</tr></thead><tbody>
+    ${rows.map(r=>`<tr><td>${r.year}</td><td>${r.estimate === null ? 'Needs trade dates' : fmtMoney(r.estimate)}</td>${!actual ? `<td>${fmtMoney((dueByYear.get(r.year) || 0)/100)}</td>` : ''}${actual ? `<td>${missing ? 'Needs trade dates' : r.final !== null ? fmtMoney(r.final) : r.ended ? 'Needs year-end values' : 'Pending'}</td>` : ''}</tr>`).join('')}
     </tbody></table></div>` : '');
 }
 function boxAnalysisHTML(boxes = loadBoxSpreads()) {

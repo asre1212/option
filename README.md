@@ -63,7 +63,10 @@ calendar date; daily refresh removes matured records from Portfolio.
 
 **Interest by year** replaces YTD: total cost is allocated by calendar days over
 trade date through expiration, with cents reconciled in the final year. These
-are planning estimates, not tax MTM values. The per-contract annualized rate
+are planning estimates, not tax MTM values. Portfolio shows **Total due by year**
+to the right of Est. cost: credit received plus total interest for open boxes
+expiring in that year, including boxes with missing trade dates.
+The per-contract annualized rate
 and live entry preview remain unchanged. Missing/invalid trade dates are flagged
 rather than guessed; edit the actual trade date to include those contracts.
 

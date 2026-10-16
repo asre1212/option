@@ -57,3 +57,17 @@ assert.ok(analysis.indexOf('class="trade-card"') < analysis.indexOf('<details'))
 const html = fs.readFileSync(require('node:path').join(__dirname,'../index.html'),'utf8');
 assert.ok(html.indexOf('id="box-list"') < html.indexOf('id="box-yearly"'));
 console.log('PASS: accounting, persistence, full per-position cards, annualized rates, card counts, open-only Portfolio and visible Analysis history.');
+
+// Repayment is principal plus full interest in the expiration year.
+const repaymentTable = run('boxYearTable([box,{...box,creditReceived:20000,interest:1800},{...box,expDate:"2027-01-01",creditReceived:5000,interest:100}])');
+assert.match(repaymentTable, /<th>Est\. cost<\/th><th>Total due by year<\/th>/);
+assert.match(repaymentTable, /<td>2026<\/td><td>[^<]+<\/td><td>\$0\.00<\/td>/);
+assert.match(repaymentTable, /<td>2027<\/td><td>[^<]+<\/td><td>\$5100\.00<\/td>/);
+assert.match(repaymentTable, /<td>2028<\/td><td>[^<]+<\/td><td>\$32700\.00<\/td>/);
+assert.match(run('boxYearTable([{...box,dateOpened:null}])'), /<td>2028<\/td><td>Needs trade dates<\/td><td>\$10900\.00<\/td>/);
+assert.equal(run('boxYearTable([])'), '');
+assert.doesNotMatch(run('boxYearTable([box],true)'), /Total due by year/);
+assert.match(run('boxYearTable([box],true)'), /Final MTM cost/);
+assert.match(node('box-yearly').innerHTML, /\$31800\.00/);
+assert.doesNotMatch(node('box-yearly').innerHTML, /<td>2025<\/td>/);
+console.log('PASS: maturity repayments, aggregation, missing dates, column order and open-only filtering.');
