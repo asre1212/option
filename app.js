@@ -489,7 +489,7 @@ function openAddModal(prefill) {
   document.getElementById('box-ticker').value = '$SPX';
   document.getElementById('box-opened').value = boxToday();
   document.getElementById('box-date-details').open = false;
-  ['box-credit','box-interest','box-expdate'].forEach(id => document.getElementById(id).value = '');
+  ['box-credit','box-interest','box-expdate','box-fees'].forEach(id => document.getElementById(id).value = '');
   setAddEntryMode('option');
   addType = prefill?.type || 'put';
   document.getElementById('a-ticker').value  = prefill?.ticker  || '';
@@ -631,6 +631,26 @@ function validBoxDate(value) {
   const d = new Date(value + 'T00:00:00Z');
   return Number.isFinite(d.getTime()) && d.toISOString().slice(0,10) === value;
 }
+function normalizeRecordedFees(value) {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 && n <= Number.MAX_SAFE_INTEGER / 100 ? Math.round(n*100)/100 : null;
+}
+function loggedFeeTotals(d = load()) {
+  const values = [
+    ...loadBoxSpreads(d).map(b=>b.fees),
+    ...(d.trades || []).flatMap(t=>[t.fees, ...(t.rolls || []).map(r=>r.fees), ...(t.closeInfo ? [t.closeInfo.fees] : [])])
+  ].map(normalizeRecordedFees);
+  return {total:values.reduce((sum,n)=>sum + (n === null ? 0 : Math.round(n*100)),0)/100,
+    missing:values.filter(n=>n === null).length};
+}
+function renderLoggedFees(d = load()) {
+  const el = document.getElementById('scan-fees-total');
+  if (!el) return;
+  const fees = loggedFeeTotals(d);
+  el.textContent = `${fmtMoney(fees.total)} recorded` + (fees.missing ? ` · ${fees.missing} fee totals unknown` : '');
+}
 function normalizeBoxSpread(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const ticker = String(raw.ticker || '').trim().toUpperCase();
@@ -644,6 +664,8 @@ function normalizeBoxSpread(raw) {
   return {
     id: typeof raw.id === 'string' && /^[a-z0-9_-]{1,40}$/i.test(raw.id) ? raw.id : uid(),
     ticker, creditReceived: Math.round(creditReceived * 100) / 100,
+    fees: normalizeRecordedFees(raw.fees),
+    ...(Array.isArray(raw.legs) && raw.legs.length === 4 ? {legs:raw.legs.map(normalizeScanLeg)} : {}),
     interest: Math.round(interest * 100) / 100, expDate: raw.expDate,
     dateOpened: validBoxDate(raw.dateOpened) ? raw.dateOpened : null,
     yearEndValues: Object.fromEntries(Object.entries(raw.yearEndValues || {}).filter(([year,value]) =>
@@ -745,7 +767,7 @@ function spxFinancingTotals(boxes) {
   const totals = new Map();
   let missing = 0;
   for (const box of boxes) {
-    if (String(box.ticker).toUpperCase().replace(/^\$/, '') !== 'SPX') continue;
+    if (!/^SPXW?$/.test(String(box.ticker).toUpperCase().replace(/^\$/, ''))) continue;
     if (!validBoxDate(box.dateOpened)) { missing++; continue; }
     if (!Number.isFinite(box.creditReceived) || box.creditReceived <= 0) continue;
     const year = Number(box.dateOpened.slice(0,4));
@@ -830,6 +852,7 @@ function editBoxSpread(id) {
   document.getElementById('box-ticker').value = box.ticker;
   document.getElementById('box-credit').value = box.creditReceived;
   document.getElementById('box-interest').value = box.interest;
+  document.getElementById('box-fees').value = box.fees ?? '';
   document.getElementById('box-expdate').value = box.expDate;
   document.getElementById('box-opened').value = box.dateOpened || '';
   document.getElementById('box-date-details').open = boxTermDays(box) === null;
@@ -843,11 +866,14 @@ function saveBoxSpread() {
     document.getElementById('box-date-details').open = true;
     return;
   }
+  if (document.getElementById('box-fees').value.trim() !== '' && normalizeRecordedFees(document.getElementById('box-fees').value) === null) { alert('Fees must be a nonnegative total dollar amount.'); return; }
   const box = normalizeBoxSpread({
     id: editingBoxId,
     ticker: document.getElementById('box-ticker').value,
     creditReceived: document.getElementById('box-credit').value,
     interest: document.getElementById('box-interest').value,
+    fees: document.getElementById('box-fees').value,
+    legs: loadBoxSpreads().find(b=>b.id === editingBoxId)?.legs,
     expDate: expiry, dateOpened: opened,
     yearEndValues: loadBoxSpreads().find(b=>b.id === editingBoxId)?.yearEndValues || {}
   });
@@ -880,6 +906,8 @@ function boxPositionCard(b, today = boxToday()) {
         <div class="tc-metrics" style="grid-template-columns:repeat(2,minmax(0,1fr))">
           <div class="metric"><div class="m-label">Credit Received</div><div class="m-val">${fmtMoney(b.creditReceived)}</div></div>
           <div class="metric"><div class="m-label">Interest Cost</div><div class="m-val">${fmtMoney(b.interest)} <span title="Expected annualized interest rate">(${expectedRate === null ? '—' : fmtPct(expectedRate)})</span></div></div>
+          <div class="metric"><div class="m-label">Fees · total</div><div class="m-val">${b.fees == null ? 'Unknown' : fmtMoney(b.fees)}</div></div>
+          <div class="metric"><div class="m-label">Cost at expiry incl. recorded fees</div><div class="m-val">${fmtMoney(b.interest + (b.fees || 0))}${b.fees == null ? ' + unknown fees' : ''}</div></div>
           <div class="metric"><div class="m-label">Expiration</div><div class="m-val">${esc(b.expDate)}</div></div>
           <div class="metric"><div class="m-label">Days to Expiry</div><div class="m-val">${boxDaysRemaining(b,today)}</div></div>
         </div>
@@ -893,7 +921,14 @@ function boxPositionCard(b, today = boxToday()) {
 
 }
 function renderBoxSpreads(d = load()) {
+  renderLoggedFees(d);
   const today = boxToday(), boxes = loadBoxSpreads(d);
+  const feeEl = document.getElementById('spx-fees-total');
+  if (feeEl) {
+    const spx = boxes.filter(b=>/^\$?SPXW?$/.test(b.ticker));
+    feeEl.textContent = `SPX fees recorded · ${fmtMoney(spx.reduce((sum,b)=>sum + Math.round((b.fees || 0)*100),0)/100)}`
+      + (spx.some(b=>b.fees == null) ? ' · some fees unknown' : '');
+  }
   const sorted = boxes.filter(b => b.expDate > today).sort((a,b)=>a.expDate.localeCompare(b.expDate));
   document.getElementById('box-count').textContent = `${sorted.length} open`;
   document.getElementById('box-yearly').innerHTML = boxYearTable(sorted);
@@ -4708,17 +4743,17 @@ async function exportExcel() {
   // Financing gets its own sheet and never enters trading performance totals.
   const boxes = loadBoxSpreads(), boxDay = boxToday();
   const boxRows = [
-    ['Ticker','Credit Received','Interest Cost','Expiration','Days to Expiry','Status','Settled Total Cost','Trade Date','Term Days'],
+    ['Ticker','Credit Received','Interest Cost','Expiration','Days to Expiry','Status','Settled Total Cost','Trade Date','Term Days','Fees'],
     ...boxes.map(b => [b.ticker,b.creditReceived,b.interest,b.expDate,
       boxDaysRemaining(b,boxDay),b.expDate <= boxDay ? 'Expired' : 'Active',
-      b.expDate <= boxDay ? b.interest : 0,b.dateOpened || '',boxTermDays(b)]),
+      b.expDate <= boxDay ? b.interest : 0,b.dateOpened || '',boxTermDays(b),b.fees ?? 'Unknown']),
     ['Year', 'Estimated Cost', 'Final MTM Cost'],
     ...boxYearTotals(boxes,boxDay).map(r=>[r.year,r.estimate,boxes.some(b=>boxTermDays(b) === null) ? 'Needs trade dates' : r.final ?? (r.ended ? 'Needs year-end values' : 'Pending')])
   ];
   const wsBox = XLSX.utils.aoa_to_sheet(boxRows);
-  wsBox['!cols'] = colW([28,18,18,14,16,12,18,14,12]);
+  wsBox['!cols'] = colW([28,18,18,14,16,12,18,14,12,18]);
   applyNumberFormats(wsBox, boxRows.length - 1,
-    {1:XL_MONEY,2:XL_MONEY,4:XL_INT,6:XL_MONEY,8:XL_INT});
+    {1:XL_MONEY,2:XL_MONEY,4:XL_INT,6:XL_MONEY,8:XL_INT,9:XL_MONEY});
   styleHeaderRow(wsBox, boxRows[0].length);
   XLSX.utils.book_append_sheet(wb, wsBox, 'Short Box Spreads');
 
@@ -5137,7 +5172,7 @@ function normalizeTrade(raw) {
   const dte    = Math.max(1, parseInt(raw.dteAtExecution) || 1);
   const t = {
     id: (typeof raw.id === 'string' && /^[a-z0-9_-]{1,40}$/i.test(raw.id)) ? raw.id : uid(),
-    ticker, strikePrice: strike, premium,
+    ticker, strikePrice: strike, premium, fees:normalizeRecordedFees(raw.fees),
     type: raw.type === 'call' ? 'call' : 'put',
     qty:  Math.max(1, parseInt(raw.qty) || 1),
     dteAtExecution: dte,
@@ -5163,7 +5198,7 @@ function normalizeTrade(raw) {
     raw.rolls.forEach(r => {
       const s = num(r?.strikePrice), p = num(r?.premium), d = parseInt(r?.dte);
       if (s != null && s > 0 && p != null && d > 0) t.rolls.push({
-        strikePrice: s, premium: p, dte: d,
+        strikePrice: s, premium: p, dte: d, fees:normalizeRecordedFees(r.fees),
         dateRolled: DATE_RE.test(r.dateRolled || '') ? r.dateRolled : t.dateOpened,
         expDate:    DATE_RE.test(r.expDate || '')    ? r.expDate    : null
       });
@@ -5172,6 +5207,7 @@ function normalizeTrade(raw) {
   if (status !== 'active') {
     t.closeInfo = {
       buyingPrice: num(raw.closeInfo?.buyingPrice) ?? 0,
+      fees:normalizeRecordedFees(raw.closeInfo?.fees),
       dateClosed:  DATE_RE.test(raw.closeInfo?.dateClosed || '') ? raw.closeInfo.dateClosed : todayStr()
     };
   }
@@ -5343,11 +5379,23 @@ async function createOcrWorker(logger) {
 
 // ── Date helpers for OCR parsing ──
 function parseSlashDate(s) {
-  const m = String(s).match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  const m = String(s).match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
   if (!m) return null;
-  let yr = parseInt(m[3]); if (yr < 100) yr += 2000;
-  const d = new Date(yr, parseInt(m[1]) - 1, parseInt(m[2]));
-  return isNaN(d) ? null : d;
+  let yr = Number(m[3]); if (yr < 100) yr += 2000;
+  const iso = `${yr}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  return validBoxDate(iso) ? new Date(iso+'T00:00:00') : null;
+}
+function scanDate(value) {
+  const text = String(value).trim();
+  if (validBoxDate(text)) return text;
+  const slash = parseSlashDate(text);
+  if (slash) return isoDate(slash);
+  const m = text.match(/^([A-Z]{3,9})\.?\s+(\d{1,2}),?\s+['’]?(\d{2,4})$/i);
+  if (!m) return null;
+  const month = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[1].slice(0,3).toLowerCase())+1;
+  let year = Number(m[3]); if (year < 100) year += 2000;
+  const iso = `${year}-${String(month).padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  return validBoxDate(iso) ? iso : null;
 }
 function isoDate(d) {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -5357,16 +5405,120 @@ function dteFromToday(d) {
   return Math.max(1, Math.ceil((d - today0) / 86400000));
 }
 
+// Keep amounts in dollars. An option quote is multiplied by 100 and quantity
+// exactly once; fees are the total charge for the entire order, never per leg.
+const scanNumber = value => {
+  const text = String(value ?? '').replace(/[$,]/g,'').trim();
+  return /^-?\d+(?:\.\d+)?$/.test(text) ? Number(text) : null;
+};
+function scanFees(text) {
+  const money = '(\\$?\\s*[0-9][0-9,]*(?:\\.[0-9]{1,2})?)';
+  const totals = [...text.matchAll(new RegExp('(?:total\\s+(?:fees?(?:\\s*(?:and|&)\\s*commissions?)?|commissions?(?:\\s*(?:and|&)\\s*fees?)?)|(?:fees?\\s*(?:and|&)\\s*commissions?|commissions?\\s*(?:and|&)\\s*fees?))\\s*:?\\s*'+money,'gi'))];
+  if (totals.length === 1) return normalizeRecordedFees(scanNumber(totals[0][1]));
+  if (totals.length > 1) return null; // Repeated totals may be per-leg or duplicated order totals.
+  const rows = [...text.matchAll(/^(?:\s*)(commissions?|(?:regulatory|exchange|transaction|other)\s+fees?|fees?)\s*:?\s*(\$?\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?)\s*$/gim)];
+  return rows.length ? rows.reduce((sum,m)=>sum+Math.round(scanNumber(m[2])*100),0)/100 : null;
+}
+function normalizeScanLeg(raw) {
+  return {symbol:String(raw?.symbol || '').toUpperCase().replace(/^\$/,''),
+    expDate:scanDate(raw?.expDate) || '', strike:scanNumber(raw?.strike),
+    type:raw?.type === 'call' ? 'call' : raw?.type === 'put' ? 'put' : '',
+    action:['buy_open','sell_open','buy_close','sell_close'].includes(raw?.action) ? raw.action : '',
+    qty:scanNumber(raw?.qty), price:scanNumber(raw?.price)};
+}
+function scanOptionLegs(raw) {
+  const date = '(?:\\d{4}-\\d{2}-\\d{2}|\\d{1,2}[/-]\\d{1,2}[/-]\\d{2,4}|(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\\.?\\s+\\d{1,2},?\\s+[\'’]?\\d{2,4})';
+  const re = new RegExp('\\b([A-Z]{1,6})\\s+('+date+')\\s+\\$?([0-9][0-9,]*(?:\\.[0-9]{1,3})?)\\s*([PC])(?:UT|ALL)?\\b','gi');
+  const matches = [...raw.matchAll(re)];
+  // OCC/OSI compact option symbols, e.g. SPXW271119C06800000.
+  const occ = [...raw.matchAll(/\b([A-Z]{1,6})\s*(\d{2})(\d{2})(\d{2})([CP])(\d{8})\b/gi)];
+  for (const m of occ) matches.push(Object.assign([m[0],m[1],`20${m[2]}-${m[3]}-${m[4]}`,String(Number(m[6])/1000),m[5]],{index:m.index}));
+  matches.sort((a,b)=>a.index-b.index);
+  const actionRE = /\b(BUY|SELL)\s+TO\s+(OPEN|CLOSE)\b|\b(BTO|STO|BTC|STC)\b/ig;
+  const firstAction = raw.search(/\b(?:BUY|SELL)\s+TO\s+(?:OPEN|CLOSE)\b|\b(?:BTO|STO|BTC|STC)\b/i);
+  const prefix = matches.length && firstAction >= 0 && firstAction < matches[0].index;
+  const allActions = [...raw.matchAll(actionRE)];
+  const prefixStarts = matches.map((m,i)=>allActions.filter(a=>a.index < m.index
+    && a.index >= (i ? matches[i-1].index+matches[i-1][0].length : 0)).at(-1)?.index ?? m.index);
+  return matches.map((m,i)=>{
+    const block = prefix ? raw.slice(prefixStarts[i],i+1 < matches.length ? prefixStarts[i+1] : raw.length)
+      : raw.slice(m.index+m[0].length,i+1 < matches.length ? matches[i+1].index : raw.length);
+    const actions = [...block.matchAll(actionRE)];
+    const a = prefix ? actions.at(-1) : actions[0];
+    const action = a ? (a[3] ? ({BTO:'buy_open',STO:'sell_open',BTC:'buy_close',STC:'sell_close'})[a[3].toUpperCase()]
+      : `${a[1].toLowerCase()}_${a[2].toLowerCase()}`) : '';
+    const filledQtyLabel = /FILLED\s*QTY\.?/i.test(block);
+    const qty = block.match(/FILLED\s*QTY\.?\s*:?\s*(?:FILL\s*PRICE\s*)?(?:FILL\s*TIME\s*)?(\d+)\b/i)
+      || (!filledQtyLabel && a ? block.slice(a.index+a[0].length).match(/^\s*(\d+)\b/) : null);
+    // A column-oriented confirmation may list all labels before all values.
+    // The first dollar amount after Fill Price is the fill, not a bid or limit.
+    const fill = block.match(/FILL(?:ED)?\s*PRICE[\s\S]*?\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)/i)
+      || block.match(/FILL(?:ED)?\s*PRICE\s*:?\s*([0-9][0-9,]*(?:\.[0-9]+)?)/i);
+    return normalizeScanLeg({symbol:m[1],expDate:m[2],strike:m[3],type:m[4].toUpperCase()==='C'?'call':'put',
+      action,qty:qty ? qty[1] : null,price:fill ? fill[1] : null});
+  });
+}
+function scanExecutionDate(raw) {
+  const dates = [...raw.matchAll(/(?:FILL\s*TIME|CREATE\s*TIME|TRADE\s*DATE)[^\n]*?(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}|\d{4}-\d{2}-\d{2})/gi)].map(m=>scanDate(m[1]));
+  if (!dates.length) for (const m of raw.matchAll(/\d{1,2}:\d{2}\s*[AP]M\s*(?:ET|EST|EDT)\s+(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})/gi)) dates.push(scanDate(m[1]));
+  const unique = [...new Set(dates.filter(Boolean))];
+  return unique.length === 1 ? unique[0] : '';
+}
+// Box payoff/European exercise reference:
+// https://www.optionseducation.org/getmedia/1dcd759e-d52b-4323-8095-c3a343cab824/box-spreads-paper_2025.pdf
+// SPX/SPXW $100 multiplier: https://www.cboe.com/tradable-products/sp-500/spx-options/spx-specifications
+function assessScannedBox(legs, fees = null) {
+  const errors = [];
+  if (fees !== null && (typeof fees !== 'number' || !Number.isFinite(fees) || fees < 0 || fees > Number.MAX_SAFE_INTEGER/100)) errors.push('Total fees must be a nonnegative dollar amount.');
+  if (legs.length !== 4) errors.push('Exactly four option legs are required.');
+  if (legs.some(l=>!/^SPXW?$/.test(l.symbol))) errors.push('All four legs must be SPX or SPXW index options.');
+  if (new Set(legs.map(l=>l.symbol)).size !== 1) errors.push('Mixed contract series: SPX and SPXW must not be combined.');
+  if (legs.some(l=>!validBoxDate(l.expDate)) || new Set(legs.map(l=>l.expDate)).size !== 1) errors.push('All legs need the same valid expiration date and settlement series.');
+  if (legs.some(l=>!Number.isSafeInteger(l.qty) || l.qty < 1) || new Set(legs.map(l=>l.qty)).size !== 1) errors.push('All four filled quantities must be equal positive whole numbers.');
+  if (legs.some(l=>!['buy_open','sell_open'].includes(l.action))) errors.push('All four legs must explicitly be Buy to Open or Sell to Open.');
+  const strikes = [...new Set(legs.map(l=>l.strike))].sort((a,b)=>a-b);
+  if (strikes.length !== 2 || strikes.some(n=>!Number.isFinite(n) || n <= 0)) errors.push('A box needs exactly two distinct positive strikes.');
+  const keys = legs.map(l=>`${l.strike}:${l.type}`);
+  if (new Set(keys).size !== 4 || legs.some(l=>!['call','put'].includes(l.type))) errors.push('Each strike needs one call and one put; duplicated or missing legs are not a box.');
+  let direction = null;
+  if (!errors.length) {
+    const short = legs.every(l=>l.action === ((l.strike === strikes[0]) === (l.type === 'call') ? 'sell_open' : 'buy_open'));
+    const long = legs.every(l=>l.action === ((l.strike === strikes[0]) === (l.type === 'call') ? 'buy_open' : 'sell_open'));
+    direction = short ? 'short' : long ? 'long' : null;
+    if (!direction) errors.push('Buy/sell directions do not form a box; this position has directional exposure.');
+  }
+  const structureValid = !errors.length;
+  if (direction === 'long') errors.push('This is a long box (lending), not a short financing box.');
+  const priced = legs.every(l=>Number.isFinite(l.price) && l.price >= 0);
+  if (!priced) errors.push('Enter the actual fill price of every leg; quotes and limit prices are not fills.');
+  const credit = structureValid && priced ? Math.round(legs.reduce((sum,l)=>sum+(l.action==='sell_open'?1:-1)*Math.round(l.price*10000*l.qty),0))/100 : null;
+  const repayment = structureValid ? Math.round((strikes[1]-strikes[0])*100*legs[0].qty*100)/100 : null;
+  if (direction === 'short' && credit !== null && (!(credit > 0) || credit > repayment)) errors.push('Credit must be positive and no greater than the fixed repayment; check prices and quantities.');
+  if ([credit,repayment].some(n=>n !== null && (!Number.isFinite(n) || Math.abs(n) > Number.MAX_SAFE_INTEGER/100))) errors.push('Amounts are too large to calculate safely.');
+  const interest = direction === 'short' && credit !== null && repayment !== null ? Math.round((repayment-credit)*100)/100 : null;
+  const valid = !errors.length;
+  return {valid,structureValid,direction,errors,credit,repayment,interest,
+    fees, maxLoss:valid ? Math.max(0,Math.round((interest+(fees || 0))*100)/100) : null};
+}
+function parseBoxScan(raw, legs) {
+  const fees = scanFees(raw);
+  return {action:'box_spread',ticker:'SPX',legs,fees,dateOpened:scanExecutionDate(raw),
+    rawText:raw,thumb:null,assessment:assessScannedBox(legs,fees)};
+}
+
 // ── Parse OCR text into trade fields ──
 function parseTradeText(raw) {
   const t  = raw;
   const tu = raw.toUpperCase();
+  const legs = scanOptionLegs(raw);
+  const spxMultiOpen = /\bSPXW?\b/i.test(raw) && (raw.match(/\b(?:BUY|SELL)\s+TO\s+OPEN\b|\b(?:BTO|STO)\b/gi) || []).length > 1 && !/\b(?:BUY|SELL)\s+TO\s+CLOSE\b|\b(?:BTC|STC)\b/i.test(raw);
+  if (spxMultiOpen || (legs.length >= 3 && legs.some(l=>/^SPXW?$/.test(l.symbol))) || /\bbox\s*spread\b|\b4[ -]leg\b|\bfour[ -]leg\b/i.test(raw)) return parseBoxScan(raw,legs);
 
   const out = {
     ticker:'', strike:'', premium:'', type:'put',
     dte:'', expDate:'', qty:null, dateOpened: todayStr(),
     action: null,   // 'new_trade' | 'close_trade' | 'roll'
-    rawText: raw, thumb: null
+    rawText: raw, thumb: null, fees:scanFees(raw)
   };
 
   // ── Action ──
@@ -5502,6 +5654,39 @@ function parseTradeText(raw) {
     if (!isNaN(d)) out.dateOpened = d.toISOString().split('T')[0];
   }
 
+  const opening = legs.filter(l=>/_open$/.test(l.action));
+  const closing = legs.filter(l=>/_close$/.test(l.action));
+  if (opening.length && closing.length || /\broll(?:out|ing|ed)?\b/i.test(raw)) {
+    out.action = 'roll';
+    const next = opening.length === 1 ? opening[0] : null;
+    out.expDate = next?.expDate || '';
+    out.dte = out.expDate ? dteFromDate(out.expDate) : '';
+    if (next) { out.ticker = next.symbol; out.strike = next.strike; out.type = next.type; out.qty = next.qty; }
+    // Only the order's actual fill is a roll premium; live bid/ask and limits are not.
+    const order = raw.match(/ORDER\s+STATUS[\s\S]*?FILL\s*PRICE\s*:?\s*\$?([0-9][0-9,]*(?:\.[0-9]+)?)/i);
+    const net = raw.match(/NET\s+(CREDIT|DEBIT)\s+(?:FILL\s*PRICE|PRICE)\s*:?\s*\$?([0-9][0-9,]*(?:\.[0-9]+)?)/i);
+    if (order) out.premium = scanNumber(order[1]) * (/\bDEBIT\b/i.test(raw.split(/DETAILS/i)[0]) ? -1 : 1);
+    else if (net) out.premium = scanNumber(net[2]) * (net[1].toUpperCase()==='DEBIT' ? -1 : 1);
+    else if (next && next.price !== null && closing.length === 1 && closing[0].price !== null && next?.qty === closing[0].qty)
+      out.premium = Math.round((next.price-closing[0].price)*100)/100;
+    else out.premium = '';
+    if (!next) out.scanWarning = 'Opening leg is unclear. Enter the NEW contract expiration; the closing expiration was not reused.';
+  }
+  out.closingLeg = closing.length === 1 ? closing[0] : null;
+  out.openingLeg = opening.length === 1 ? opening[0] : null;
+  if (out.action === 'roll' && (out.closingLeg?.action === 'sell_close' || out.openingLeg?.action === 'buy_open')) {
+    out.rollSupported = false;
+    out.scanWarning = 'This tracker supports short-option rolls: Buy to Close followed by Sell to Open. These directions do not match.';
+  }
+  if (legs.length === 1) {
+    const leg = legs[0];
+    if (leg.qty !== null) out.qty = leg.qty;
+    out.ticker = leg.symbol; out.strike = leg.strike; out.type = leg.type;
+    out.expDate = leg.expDate; out.dte = leg.expDate ? dteFromDate(leg.expDate) : '';
+    if (leg.price !== null && out.action !== 'roll') out.premium = leg.price;
+  }
+  const executionDate = scanExecutionDate(raw);
+  if (executionDate) out.dateOpened = executionDate;
   return out;
 }
 
@@ -5628,29 +5813,32 @@ let currentIdx = 0;
 
 // ── Group results: detect roll pairs across multiple images ──
 function groupResults(results) {
-  // If we have both a close_trade and new_trade for the same ticker → promote to roll pair
-  const grouped = results.map((r, i) => ({ ...r, _idx: i, _skip: false }));
-  for (let i = 0; i < grouped.length; i++) {
-    if (grouped[i].action === 'close_trade') {
-      for (let j = 0; j < grouped.length; j++) {
-        if (i !== j && grouped[j].action === 'new_trade'
-            && grouped[i].ticker && grouped[j].ticker
-            && grouped[i].ticker === grouped[j].ticker) {
-          // Mark j as the open leg of a roll linked to i
-          grouped[j].action = 'roll';
-          grouped[j].rollLinkedTo = i;
-          grouped[i]._skip = true; // swallow close into the roll card
-          break;
-        }
-      }
-    }
+  const grouped = results.map((r,i)=>({...r,_idx:i,_skip:false}));
+  for (let i=0;i<grouped.length;i++) {
+    const close = grouped[i];
+    if (close.action !== 'close_trade' || close.closingLeg?.action !== 'buy_close') continue;
+    const compatible = r=>r.action === 'new_trade' && r.openingLeg?.action === 'sell_open'
+      && r.ticker === close.ticker && r.type === close.type && r.qty > 0 && r.qty === close.qty
+      && r.dateOpened === close.dateOpened;
+    const opens = grouped.filter(compatible);
+    const closes = grouped.filter(r=>r.action === 'close_trade' && r.ticker === close.ticker
+      && r.type === close.type && r.qty === close.qty && r.dateOpened === close.dateOpened);
+    if (opens.length !== 1 || closes.length !== 1) continue;
+    const open = opens[0];
+    open.action = 'roll'; open.rollLinkedTo = i; open.closingLeg = close.closingLeg;
+    open.premium = Number.isFinite(open.premium) && Number.isFinite(close.premium)
+      ? Math.round((open.premium-close.premium)*100)/100 : '';
+    open.fees = open.fees !== null && close.fees !== null ? Math.round((open.fees+close.fees)*100)/100 : null;
+    close._skip = true;
   }
-  return grouped.filter(r => !r._skip);
+  return grouped.filter(r=>!r._skip);
 }
 
 // ── Render all result cards ──
+let scanReviews = [];
 function renderScanResults() {
   const grouped = groupResults(scanResults);
+  scanReviews = grouped;
   const container = document.getElementById('scan-results');
   if (!grouped.length) {
     container.innerHTML = `<div class="empty"><div class="empty-txt">No trade data found in images</div></div>`;
@@ -5663,12 +5851,138 @@ function renderScanResults() {
     card.id = `rc-${i}`;
     card.innerHTML = buildResultCardHTML(r, i);
     container.appendChild(card);
+    if (r.action === 'box_spread') refreshBoxScan(i);
+    else if (r.action === 'roll' || r.action === 'close_trade') refreshScanLink(i);
   });
+}
+
+// SPX scans are reviewed as one four-leg financing entry, never four naked trades.
+function buildBoxScanCard(r, idx) {
+  const legs = Array.from({length:Math.max(4,r.legs.length)},(_,i)=>r.legs[i] || normalizeScanLeg({}));
+  const input = (i,key,value,type='text',extra='') => `<input class="fi" id="rc-box-${idx}-${i}-${key}" type="${type}" value="${esc(value ?? '')}" ${extra}>`;
+  const select = (i,key,value,options) => `<select class="fi" id="rc-box-${idx}-${i}-${key}">${options.map(([v,label])=>`<option value="${v}"${value===v?' selected':''}>${label}</option>`).join('')}</select>`;
+  return `<div class="rc-head"><div class="rc-head-text"><div class="rc-action-badge rca-new">SPX box spread · review</div><div class="rc-detected">Four legs → one financing entry</div></div></div>
+    <div class="rc-body" data-box-scan-count="${legs.length}" oninput="refreshBoxScan(${idx})" onchange="refreshBoxScan(${idx})">
+      <div id="rc-box-check-${idx}" aria-live="polite">${boxScanAssessmentHTML(r.assessment)}</div>
+      <details style="margin:12px 0"${r.assessment.structureValid ? '' : ' open'}><summary style="cursor:pointer">Review / correct all option legs</summary>
+        ${legs.map((l,i)=>`<fieldset style="min-width:0;border:1px solid var(--border);border-radius:10px;margin:10px 0;padding:10px"><legend>Leg ${i+1}</legend><div class="rc-fields">
+          <label class="rc-field">Contract series${input(i,'symbol',l.symbol)}</label>
+          <label class="rc-field">Action${select(i,'action',l.action,[['','Select action'],['buy_open','Buy to Open'],['sell_open','Sell to Open'],['buy_close','Buy to Close'],['sell_close','Sell to Close']])}</label>
+          <label class="rc-field">Type${select(i,'type',l.type,[['','Select type'],['call','Call'],['put','Put']])}</label>
+          <label class="rc-field">Strike${input(i,'strike',l.strike,'number','min="0.01" step="0.01"')}</label>
+          <label class="rc-field">Filled contracts${input(i,'qty',l.qty,'number','min="1" step="1"')}</label>
+          <label class="rc-field">Expiration${input(i,'expDate',l.expDate,'date')}</label>
+          <label class="rc-field rc-field-full">Actual fill price · points${input(i,'price',l.price,'number','min="0" step="0.01"')}</label>
+        </div></fieldset>`).join('')}
+      </details>
+      <div class="rc-fields">
+        <label class="rc-field">Actual trade date<input class="fi" type="date" id="rc-box-date-${idx}" value="${esc(r.dateOpened)}"></label>
+        <label class="rc-field">Total order fees ($)<input class="fi" type="number" min="0" step="0.01" id="rc-box-fees-${idx}" value="${r.fees ?? ''}" placeholder="Unknown · enter if available"></label>
+      </div>
+      <div class="stat-sub">Fees are the total for all four legs, including commissions and exchange fees. Blank means unknown; enter 0 only if no fees were charged.</div>
+      <label style="display:flex;gap:8px;align-items:flex-start;margin-top:12px;font-size:12px"><input type="checkbox" id="rc-box-confirm-${idx}"><span>I checked all four filled legs, quantities, and matching AM/PM settlement series against my confirmation.</span></label>
+      <details style="margin-top:10px"><summary style="cursor:pointer;font-size:12px">Extracted screenshot text</summary><pre style="white-space:pre-wrap;font-size:11px">${esc(r.rawText)}</pre></details>
+    </div>
+    <div class="rc-actions"><button class="rc-btn rc-btn-skip" onclick="rcSkip(${idx})">Skip</button><button class="rc-btn rc-btn-accept" id="rc-box-save-${idx}" onclick="rcAcceptBox(${idx})" disabled>Confirm &amp; add box spread</button></div>`;
+}
+function boxScanAssessmentHTML(a) {
+  const status = a.valid ? 'Short box structure matches' : a.direction === 'long' ? 'Long box detected · not borrowing' : 'Box spread not confirmed';
+  return `<div class="${a.valid ? 'stat-sub' : 'rc-warn'}"><b>${status}</b></div>
+    ${a.errors.map(message=>`<div class="rc-warn">${esc(message)}</div>`).join('')}
+    <div class="tc-metrics" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-top:12px">
+      <div class="metric"><div class="m-label">Financed · credit before fees</div><div class="m-val">${a.valid ? fmtMoney(a.credit) : 'Unverified'}</div></div>
+      <div class="metric"><div class="m-label">Fixed repayment at expiry</div><div class="m-val">${a.valid ? fmtMoney(a.repayment) : 'Unverified'}</div></div>
+      <div class="metric"><div class="m-label">Interest · before fees</div><div class="m-val">${a.valid ? fmtMoney(a.interest) : 'Unverified'}</div></div>
+      <div class="metric"><div class="m-label">Maximum loss at expiry</div><div class="m-val">${a.maxLoss === null ? 'Unverified' : fmtMoney(a.maxLoss)}${a.valid && a.fees === null ? ' + unknown fees' : ''}</div></div>
+      <div class="metric"><div class="m-label">Total order fees</div><div class="m-val">${a.fees === null ? 'Unknown' : fmtMoney(a.fees)}</div></div>
+      <div class="metric"><div class="m-label">Net cash after fees</div><div class="m-val">${a.valid && a.fees !== null ? fmtSigned(a.credit-a.fees) : 'Needs fee total'}</div></div>
+    </div>
+    <div class="stat-sub" style="margin-top:8px">Expiry loss = repayment − credit + recorded fees, with all four matching European cash-settled legs held intact to expiry. Early-close prices and any future fees can differ. Check the original confirmation; OCR alone cannot verify execution or settlement.</div>`;
+}
+function readBoxScan(idx) {
+  const count = Number(document.querySelector(`#rc-${idx} [data-box-scan-count]`)?.dataset.boxScanCount || 0);
+  const legs = Array.from({length:count},(_,i)=>normalizeScanLeg(Object.fromEntries(
+    ['symbol','expDate','strike','type','action','qty','price'].map(key=>[key,document.getElementById(`rc-box-${idx}-${i}-${key}`)?.value ?? '']))));
+  const feeInput = document.getElementById(`rc-box-fees-${idx}`)?.value || '';
+  const fees = normalizeRecordedFees(feeInput), assessment = assessScannedBox(legs,fees);
+  const dateOpened = document.getElementById(`rc-box-date-${idx}`)?.value || '';
+  const errors = [];
+  if (feeInput.trim() !== '' && fees === null) errors.push('Total fees must be zero or a positive dollar amount.');
+  if (!validBoxDate(dateOpened) || dateOpened > boxToday() || legs.some(l=>l.expDate < dateOpened)) errors.push('Enter the actual trade date, on or before today and expiration.');
+  return {legs,fees,dateOpened,assessment,errors};
+}
+function refreshBoxScan(idx) {
+  const form = readBoxScan(idx);
+  const target = document.getElementById(`rc-box-check-${idx}`);
+  if (target) target.innerHTML = boxScanAssessmentHTML(form.assessment) + form.errors.map(e=>`<div class="rc-warn">${esc(e)}</div>`).join('');
+  const button = document.getElementById(`rc-box-save-${idx}`);
+  if (button) button.disabled = !form.assessment.valid || form.errors.length > 0 || !document.getElementById(`rc-box-confirm-${idx}`)?.checked;
+}
+function rcAcceptBox(idx) {
+  const card = document.getElementById(`rc-${idx}`);
+  if (!card || card.dataset.saved) return;
+  const form = readBoxScan(idx);
+  if (!form.assessment.valid || form.errors.length || !document.getElementById(`rc-box-confirm-${idx}`)?.checked) {
+    refreshBoxScan(idx); alert('Review the four legs, resolve the flagged fields, and confirm the matching settlement series before saving.'); return;
+  }
+  const box = normalizeBoxSpread({id:uid(),ticker:'$SPX',creditReceived:form.assessment.credit,
+    interest:form.assessment.interest,fees:form.fees,dateOpened:form.dateOpened,expDate:form.legs[0].expDate,legs:form.legs});
+  if (!box) { alert('The financing entry contains invalid amounts or dates.'); return; }
+  const d = load();
+  d.boxSpreads = [...loadBoxSpreads(d),box];
+  save(d);
+  card.dataset.saved = 'true';
+  card.remove(); checkAllHandled();
+  renderActive(); updateStats(); renderAnalysisIfOpen();
+}
+
+// Link against the current contract, including prior rolls. Never offer another ticker.
+function matchingScanTrades(r, d = load()) {
+  if (r.rollSupported === false) return [];
+  return (d.trades || []).filter(t=>t.status === 'active' && t.ticker === r.ticker && t.type === r.type
+    && tradeQty(t) === r.qty && (!r.closingLeg || (
+      t.ticker === r.closingLeg.symbol && t.type === r.closingLeg.type
+      && (!Number.isFinite(r.closingLeg.strike) || currentStrike(t) === r.closingLeg.strike)
+      && (!validBoxDate(r.closingLeg.expDate) || currentExpDate(t) === r.closingLeg.expDate)
+      && (r.closingLeg.qty === null || tradeQty(t) === r.closingLeg.qty))));
+}
+function scanTradeLabel(t) {
+  return `${t.ticker} ${t.type.toUpperCase()} · ${fmtMoney(currentStrike(t))} · expires ${currentExpDate(t)} · ${tradeQty(t)} contract${tradeQty(t)===1?'':'s'}`;
+}
+function refreshScanLink(idx) {
+  const source = scanReviews[idx];
+  const select = document.getElementById(`rc-link-${idx}`);
+  if (!source || !select) return;
+  const r = {...source,ticker:(document.getElementById(`rc-ticker-${idx}`)?.value || '').trim().toUpperCase(),
+    type:document.getElementById(`rc-put-${idx}`)?.classList.contains('sel-put') ? 'put' : 'call',
+    qty:Number(document.getElementById(`rc-qty-${idx}`)?.value)};
+  const matches = matchingScanTrades(r);
+  const previous = select.value;
+  // Auto-select only when the scanned closing identity gives one exact match.
+  const exact = r.closingLeg && Number.isFinite(r.closingLeg.strike) && validBoxDate(r.closingLeg.expDate);
+  const selectedId = matches.some(t=>t.id === previous) ? previous : exact && matches.length === 1 ? matches[0].id : '';
+  select.innerHTML = `<option value="">— select the matching ${esc(r.ticker || 'scanned')} trade —</option>`
+    + matches.map(t=>`<option value="${esc(t.id)}">${esc(scanTradeLabel(t))}</option>`).join('');
+  select.value = selectedId;
+  const selected = matches.find(t=>t.id === selectedId);
+  const info = document.getElementById(`rc-link-info-${idx}`);
+  if (info) info.textContent = selected ? `Will update: ${scanTradeLabel(selected)}`
+    : matches.length ? `Choose from ${matches.length} matching open trades; no other tickers are listed.`
+    : `No matching open ${r.ticker || 'scanned'} trade. Check the closing leg, quantity and existing positions; a roll will not create a new trade.`;
+  const confirm = document.getElementById(`rc-link-confirm-${idx}`);
+  if (confirm) confirm.checked = false;
+  const button = document.getElementById(`rc-accept-${idx}`);
+  if (button) button.disabled = true;
+}
+function confirmScanLink(idx) {
+  const button = document.getElementById(`rc-accept-${idx}`);
+  if (button) button.disabled = !document.getElementById(`rc-link-${idx}`)?.value || !document.getElementById(`rc-link-confirm-${idx}`)?.checked;
 }
 
 // ── Build HTML for one result card ──
 function buildResultCardHTML(r, idx) {
-  const active = load().trades.filter(t => t.status === 'active');
+  if (r.action === 'box_spread') return buildBoxScanCard(r,idx);
+  const active = matchingScanTrades(r);
 
   // Action badge
   const badges = {
@@ -5687,23 +6001,23 @@ function buildResultCardHTML(r, idx) {
     .filter(Boolean).join(' · ') || 'No data detected';
 
   // Confidence warnings
-  let warns = '';
+  let warns = r.scanWarning ? `<div class="rc-warn">${esc(r.scanWarning)}</div>` : '';
   if (!r.ticker)  warns += `<div class="rc-warn">⚠ Ticker not detected — please enter manually</div>`;
   if (!r.strike)  warns += `<div class="rc-warn">⚠ Strike price not detected — please enter manually</div>`;
-  if (!r.premium) warns += `<div class="rc-warn">⚠ Premium not detected — please enter manually</div>`;
+  if (r.premium === '' || r.premium == null) warns += `<div class="rc-warn">⚠ Premium not detected — please enter manually</div>`;
   if (!r.expDate && !r.dte) warns += `<div class="rc-warn">⚠ Expiration not detected — please enter manually</div>`;
 
   // Trade selector for close / roll
   let linkBox = '';
   if (r.action === 'close_trade' || r.action === 'roll') {
-    const opts = active.length
-      ? active.map(t => `<option value="${esc(t.id)}">${esc(t.ticker)} ${esc(t.type.toUpperCase())} ${fmtMoney(currentStrike(t))} · ${fmtMoney(totalPremiums(t))} prem</option>`).join('')
-      : `<option value="">— no active trades —</option>`;
+    const opts = active.map(t => `<option value="${esc(t.id)}">${esc(scanTradeLabel(t))}</option>`).join('');
     const lbl = r.action === 'roll' ? 'Link to existing trade being rolled' : 'Select trade being closed';
     linkBox = `
       <div class="rc-link-box">
         <div class="rc-link-lbl">${lbl}</div>
-        <select id="rc-link-${idx}">${opts}</select>
+        <select id="rc-link-${idx}" onchange="refreshScanLink(${idx})"><option value="">— select the matching trade —</option>${opts}</select>
+        <div class="rc-warn" id="rc-link-info-${idx}">Confirm the closing contract before saving.</div>
+        <label style="display:flex;gap:8px;font-size:12px"><input type="checkbox" id="rc-link-confirm-${idx}" onchange="confirmScanLink(${idx})">This is the correct existing trade to update.</label>
       </div>`;
   }
 
@@ -5742,7 +6056,7 @@ function buildResultCardHTML(r, idx) {
           <div class="rc-field-lbl">Ticker</div>
           <input type="text" id="rc-ticker-${idx}" placeholder="AAPL"
                  value="${esc(r.ticker||'')}" style="text-transform:uppercase"
-                 oninput="this.value=this.value.toUpperCase()">
+                 oninput="this.value=this.value.toUpperCase();refreshScanLink(${idx})">
         </div>
         <div class="rc-field">
           <div class="rc-field-lbl">Strike Price</div>
@@ -5750,9 +6064,9 @@ function buildResultCardHTML(r, idx) {
                  step="0.01" value="${esc(r.strike||'')}">
         </div>
         <div class="rc-field">
-          <div class="rc-field-lbl">Premium</div>
+          <div class="rc-field-lbl">${r.action === 'roll' ? 'Net roll premium · per share (negative = debit)' : 'Premium'}</div>
           <input type="number" id="rc-prem-${idx}" placeholder="1.50"
-                 step="0.01" value="${esc(r.premium||'')}">
+                 step="0.01" value="${esc(r.premium ?? '')}">
         </div>
         <div class="rc-field">
           <div class="rc-field-lbl">Expiration Date</div>
@@ -5765,14 +6079,18 @@ function buildResultCardHTML(r, idx) {
         </div>
         <div class="rc-field">
           <div class="rc-field-lbl">Contracts</div>
-          <input type="number" id="rc-qty-${idx}" placeholder="1" min="1" step="1" value="${esc(r.qty||1)}">
+          <input type="number" id="rc-qty-${idx}" placeholder="1" min="1" step="1" value="${esc(r.qty ?? '')}" oninput="refreshScanLink(${idx})">
+        </div>
+        <div class="rc-field rc-field-full">
+          <label class="rc-field-lbl" for="rc-fees-${idx}">Total order fees ($) · blank = unknown</label>
+          <input type="number" id="rc-fees-${idx}" min="0" step="0.01" value="${r.fees ?? ''}" placeholder="Not shown — enter total fees">
         </div>
         ${extraField}
       </div>
     </div>
     <div class="rc-actions">
       <button class="rc-btn rc-btn-skip"   onclick="rcSkip(${idx})">Skip</button>
-      <button class="rc-btn rc-btn-accept" onclick="rcAccept(${idx},'${r.action||'new_trade'}')">
+      <button class="rc-btn rc-btn-accept" id="rc-accept-${idx}" ${r.action === 'roll' || r.action === 'close_trade' ? 'disabled' : ''} onclick="rcAccept(${idx},'${r.action||'new_trade'}')">
         ${ r.action==='close_trade' ? 'Close Trade' : r.action==='roll' ? 'Apply Roll' : 'Add Trade' }
       </button>
     </div>`;
@@ -5782,6 +6100,7 @@ function buildResultCardHTML(r, idx) {
 function rcSetType(idx, t) {
   document.getElementById(`rc-put-${idx}`).className  = 'rc-type-btn' + (t==='put'  ? ' sel-put'  : '');
   document.getElementById(`rc-call-${idx}`).className = 'rc-type-btn' + (t==='call' ? ' sel-call' : '');
+  refreshScanLink(idx);
 }
 
 function rcSkip(idx) {
@@ -5791,12 +6110,12 @@ function rcSkip(idx) {
 }
 
 function rcAccept(idx, action) {
+  if (action === 'box_spread') { rcAcceptBox(idx); return; }
   const ticker  = (document.getElementById(`rc-ticker-${idx}`)?.value||'').toUpperCase().trim();
   const strike  = parseFloat(document.getElementById(`rc-strike-${idx}`)?.value);
   const prem    = parseFloat(document.getElementById(`rc-prem-${idx}`)?.value);
   const expSel  = document.getElementById(`rc-exp-${idx}`)?.value || '';
-  const dte     = expSel ? dteFromDate(expSel) : NaN;
-  const qty     = Math.max(1, parseInt(document.getElementById(`rc-qty-${idx}`)?.value) || 1);
+  const qty     = Number(document.getElementById(`rc-qty-${idx}`)?.value);
   const dateOp  = document.getElementById(`rc-date-${idx}`)?.value || todayStr();
   const putBtn  = document.getElementById(`rc-put-${idx}`);
   const type    = putBtn?.classList.contains('sel-put') ? 'put' : 'call';
@@ -5806,28 +6125,37 @@ function rcAccept(idx, action) {
   if (!ticker) { alert('Please enter a ticker symbol'); return; }
   if (!TICKER_RE.test(ticker)) { alert('Ticker must be 1–6 letters (A–Z)'); return; }
 
+  const feeInput = document.getElementById(`rc-fees-${idx}`)?.value ?? '';
+  const fees = normalizeRecordedFees(feeInput);
+  if (feeInput.trim() !== '' && fees === null) { alert('Fees must be a nonnegative total dollar amount.'); return; }
+  if (!validBoxDate(dateOp) || dateOp > boxToday()) { alert('Enter the actual execution date, on or before today.'); return; }
+  if (!Number.isSafeInteger(qty) || qty < 1) { alert('Enter the actual filled contract quantity.'); return; }
   const d = load();
+  if (action === 'roll' || action === 'close_trade') {
+    const match = matchingScanTrades({...scanReviews[idx],ticker,type,qty},d).find(t=>t.id === linkedId);
+    if (!match || !document.getElementById(`rc-link-confirm-${idx}`)?.checked) { alert('Select and confirm the matching existing trade. Its ticker, option type, quantity and scanned closing contract must match.'); return; }
+  }
 
   if (action === 'new_trade' || action === 'roll') {
-    if (!strike || !prem || !dte) { alert('Please fill in Strike, Premium, and Expiration Date'); return; }
+    if (!(strike > 0) || !Number.isFinite(prem) || !validBoxDate(expSel) || expSel < dateOp) { alert('Please fill in Strike, Premium, and Expiration Date'); return; }
     const expDate = expSel;
 
-    if (action === 'roll' && linkedId) {
+    if (action === 'roll') {
       // Apply as roll to existing trade
       const trade = d.trades.find(t => t.id === linkedId);
-      if (trade) {
-        trade.rolls.push({ strikePrice: strike, premium: prem, dte, dateRolled: dateOp, expDate });
-        save(d);
-      }
+      if (!trade || trade.status !== 'active' || trade.ticker !== ticker || trade.type !== type || tradeQty(trade) !== qty) { alert('Select the matching active trade with the same ticker, option type and contract quantity.'); return; }
+      trade.rolls = trade.rolls || [];
+      trade.rolls.push({ strikePrice: strike, premium: prem, dte:daysBetween(dateOp,expDate), dateRolled: dateOp, expDate, fees });
+      save(d);
     } else {
       // Brand-new trade. A screenshot is usually read some time after the fill,
       // so the stock price for that day is left to the history backfill unless
       // the trade is being logged the same day.
       const spot = dateOp === todayStr() ? spotAtEntry(ticker) : null;
       d.trades.push({
-        id: uid(), ticker, strikePrice: strike, premium: prem, qty,
-        type, dteAtExecution: dte, expDate,
-        roiAtExecution: roiPct(prem, strike, dte),
+        id: uid(), ticker, strikePrice: strike, premium: prem, qty, fees,
+        type, dteAtExecution:Math.max(1,daysBetween(dateOp,expDate)), expDate,
+        roiAtExecution: roiPct(prem, strike, Math.max(1,daysBetween(dateOp,expDate))),
         dateOpened: dateOp, status: 'active', rolls: [], closeInfo: null,
         ...(spot != null ? { spotAtOpen: spot, spotSource: 'entry' } : {})
       });
@@ -5844,7 +6172,7 @@ function rcAccept(idx, action) {
     const trade = d.trades.find(t => t.id === linkedId);
     if (trade) {
       trade.status    = 'closed_early';
-      trade.closeInfo = { buyingPrice: buyPrice, dateClosed: dateOp };
+      trade.closeInfo = { buyingPrice: buyPrice, dateClosed: dateOp, fees };
       save(d);
     }
   }
@@ -5854,8 +6182,8 @@ function rcAccept(idx, action) {
   if (card) card.style.cssText = 'opacity:.4;pointer-events:none;transition:opacity .3s';
   setTimeout(() => { card?.remove(); checkAllHandled(); }, 350);
 
-  // Refresh portfolio stats
-  updateStats();
+  // Refresh saved positions and the fee tally after an import.
+  renderActive(); renderAnalysisIfOpen(); updateStats();
 }
 
 function checkAllHandled() {

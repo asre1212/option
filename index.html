@@ -1082,6 +1082,7 @@
           <div class="stat-card" style="margin-bottom:12px">
             <div class="stat-label">SPX total financed by year</div>
             <div id="spx-financing-yearly"></div>
+            <div id="spx-fees-total" class="stat-sub"></div>
             <div class="stat-sub">Credit received grouped by the year each SPX box spread was opened. Expand a total to see amounts grouped by expiry year. Includes matured contracts; historical years remain in the tally. Editing or deleting an entry updates its total.</div>
           </div>
         </section>
@@ -1340,6 +1341,11 @@
         </div>
 
         <!-- results -->
+        <div class="stat-card" style="margin-bottom:12px">
+          <div class="stat-label">Total logged fees · all time</div>
+          <div id="scan-fees-total" class="stat-value"></div>
+          <div class="stat-sub">Recorded option-entry, roll, close and box-spread fees. Unknown fees are not counted as zero. Tracked separately from trading P&amp;L and box interest.</div>
+        </div>
         <div id="scan-results"></div>
         <div class="scan-done-banner" id="scan-done-banner">
           ✓ All imports handled — tap above to scan more
@@ -1550,12 +1556,16 @@
           <input class="fi" id="box-ticker" type="text" value="$SPX" autocapitalize="characters" spellcheck="false">
         </div>
         <div class="fg">
-          <label class="fl" for="box-credit">Credit Received ($)</label>
+          <label class="fl" for="box-credit">Credit Received · before fees ($)</label>
           <input class="fi" id="box-credit" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="Total credit">
         </div>
         <div class="fg">
           <label class="fl" for="box-interest">Interest ($)</label>
           <input class="fi" id="box-interest" type="number" inputmode="decimal" min="0" step="0.01" placeholder="Total interest cost">
+        </div>
+        <div class="fg">
+          <label class="fl" for="box-fees">Total Fees ($) · blank = unknown</label>
+          <input class="fi" id="box-fees" type="number" inputmode="decimal" min="0" step="0.01" placeholder="Total fees for the whole spread">
         </div>
         <div class="fg">
           <label class="fl" for="box-expdate">Expiration Date</label>
@@ -2037,6 +2047,6 @@
   <button class="toast-btn" id="toast-btn" onclick="toastAction()">Undo</button>
 </div>
 
-<script src="./app.js?v=20261116-spx-expiry"></script>
+<script src="./app.js?v=20261116-scan-boxes"></script>
 </body>
 </html>

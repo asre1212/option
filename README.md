@@ -33,7 +33,25 @@ in your browser's localStorage; nothing is sent to a server.
 - **ROI Calculator** — single-leg calculator plus a VS mode to compare two candidate
   trades side by side.
 - **Scan** — OCR brokerage screenshots (Tesseract.js, in-browser) into pre-filled
-  trade cards for review before saving.
+  trade cards for review before saving. Rolls take the new expiration from the
+  opening leg and link only to matching active contracts (ticker, type, quantity,
+  closing strike and expiration). A unique exact match is selected automatically;
+  ambiguous matches require a choice, and the target must be confirmed.
+- **SPX box scans** — four-leg SPX/SPXW confirmations produce one short-box
+  financing entry. Editable leg fields check opening direction, equal filled
+  quantities, two matching put/call strikes, expiration and contract series.
+  Credit is sell fills minus buy fills, times the $100 multiplier and quantity;
+  repayment is strike width times $100 and quantity. Maximum loss at expiry is
+  repayment minus credit plus entered fees, assuming all matching legs remain
+  intact through settlement. An invalid or incomplete structure gets no fixed-risk
+  estimate and cannot be saved as a financing box. Long boxes are identified as
+  lending and are not entered as borrowing. Confirm the original execution and
+  AM/PM settlement series; OCR cannot verify a brokerage account.
+- **Fees** — scanned total fees can be reviewed or entered for initial fills,
+  rolls, closes and boxes. Blank means unknown; it never silently means zero.
+  All-time recorded fees appear in Scan and SPX fees in Portfolio. Fees and scanned
+  leg details survive JSON backups; box fees also appear in Excel. Fee totals are
+  tracked separately from the existing trading P&L and box-interest figures.
 - **Notes** — a section before Data Backup in Scan, collapsed to its header on
   startup. Expand to edit the full text with bold, underline or regular text.
   Type `1.) `, `1. ` or `a. ` at the start of a paragraph to create an indented
@@ -654,3 +672,11 @@ to install it as an app.
   network connection. The in-app **Update App** button clears the cache explicitly.
 - External dependencies (Tesseract.js for OCR, SheetJS for Excel export) are
   lazy-loaded from CDNs at pinned versions and only when those features are used.
+
+### Scanner regression checks
+
+Run `node tests/scan-imports.cjs`, `node tests/box-years.cjs` and
+`node tests/app-update.cjs`. Scanner checks use synthetic confirmations and cover
+opening-leg dates, correct-ticker linking, ambiguous matches, invalid boxes,
+settlement payoff, unknown fees, backup persistence and confirmed saves. Private
+brokerage screenshots are not included in this repository.
