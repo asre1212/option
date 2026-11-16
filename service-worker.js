@@ -8,12 +8,12 @@
    connection, once each has been fetched successfully one time.
 ───────────────────────────────────────── */
 
-const CACHE_VERSION  = 'options-tracker-v13';
+const CACHE_VERSION  = 'options-tracker-v14';
 const RUNTIME_CACHE  = 'options-tracker-runtime-v1';
 const CACHE_ASSETS   = [
   './',
   './index.html',
-  './app.js?v=20261116-spx-financing',
+  './app.js?v=20261116-spx-expiry',
   './options-tracker.html',
   './manifest.json',
   './icon.svg'

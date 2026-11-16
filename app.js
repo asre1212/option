@@ -749,15 +749,32 @@ function spxFinancingTotals(boxes) {
     if (!validBoxDate(box.dateOpened)) { missing++; continue; }
     if (!Number.isFinite(box.creditReceived) || box.creditReceived <= 0) continue;
     const year = Number(box.dateOpened.slice(0,4));
-    totals.set(year, (totals.get(year) || 0) + Math.round(box.creditReceived * 100));
+    const row = totals.get(year) || {year, cents:0, expiries:new Map()};
+    const cents = Math.round(box.creditReceived * 100);
+    const expiryYear = validBoxDate(box.expDate) ? Number(box.expDate.slice(0,4)) : null;
+    row.cents += cents;
+    row.expiries.set(expiryYear, (row.expiries.get(expiryYear) || 0) + cents);
+    totals.set(year,row);
   }
-  return {rows:[...totals].sort((a,b)=>a[0]-b[0]).map(([year,cents])=>({year,total:cents/100})), missing};
+  return {rows:[...totals.values()].sort((a,b)=>a.year-b.year).map(row=>({
+    year:row.year, total:row.cents/100,
+    expiries:[...row.expiries].sort((a,b)=>(a[0] ?? Infinity)-(b[0] ?? Infinity))
+      .map(([year,cents])=>({year,total:cents/100}))
+  })), missing};
 }
 function spxFinancingTable(boxes) {
   const {rows,missing} = spxFinancingTotals(boxes);
   return (rows.length ? `<div style="overflow-x:auto"><table style="width:100%;text-align:left;font-size:13px;border-spacing:0 10px">
     <thead><tr><th>Year opened</th><th>Total financed</th></tr></thead><tbody>
-    ${rows.map(row=>`<tr><td>${row.year}</td><td>${fmtMoney(row.total)}</td></tr>`).join('')}
+    ${rows.map(row=>`<tr><td style="vertical-align:top;padding-top:8px">${row.year}</td><td>
+      <details data-spx-expiry="${row.year}">
+        <summary style="cursor:pointer;padding:8px 0" aria-label="${row.year} total financed: ${fmtMoney(row.total)}. Expand expiry-year breakdown.">${fmtMoney(row.total)}</summary>
+        <table style="width:100%;text-align:left;font-size:12px;border-spacing:0 8px">
+          <thead><tr><th>Expiry year</th><th>Amount financed</th></tr></thead><tbody>
+          ${row.expiries.map(expiry=>`<tr><td>${expiry.year ?? 'Unknown expiry'}</td><td>${fmtMoney(expiry.total)}</td></tr>`).join('')}
+          </tbody></table>
+      </details>
+    </td></tr>`).join('')}
     </tbody></table></div>` : '<div class="stat-sub">No dated SPX financing entries yet.</div>') +
     (missing ? `<div class="stat-sub">${missing} SPX ${missing === 1 ? 'entry needs' : 'entries need'} an opening date to be included.</div>` : '');
 }

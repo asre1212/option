@@ -82,7 +82,7 @@ ctx.financingBoxes = [
   {...box,dateOpened:null}, {...box,dateOpened:'2026-02-30'}
 ];
 assert.deepEqual(run('spxFinancingTotals(financingBoxes)'), {
-  rows:[{year:2024,total:20000},{year:2026,total:50123.45},{year:2027,total:10000}], missing:2
+  rows:[{year:2024,total:20000,expiries:[{year:2025,total:20000}]},{year:2026,total:50123.45,expiries:[{year:2027,total:50000},{year:2028,total:123.45}]},{year:2027,total:10000,expiries:[{year:2028,total:10000}]}], missing:2
 });
 const before = JSON.stringify(ctx.financingBoxes);
 assert.match(run('spxFinancingTable(financingBoxes)'), /2 SPX entries need an opening date/);
@@ -90,7 +90,25 @@ assert.equal(JSON.stringify(ctx.financingBoxes),before,'Summary does not mutate 
 assert.deepEqual(run('spxFinancingTotals([])'),{rows:[],missing:0});
 data.boxSpreads=JSON.parse(JSON.stringify(ctx.financingBoxes));
 vm.runInContext('renderBoxSpreads()',ctx);
-assert.match(node('spx-financing-yearly').innerHTML, /<td>2024<\/td><td>\$20000.00/);
-assert.match(node('spx-financing-yearly').innerHTML, /<td>2026<\/td><td>\$50123.45/);
+assert.match(node('spx-financing-yearly').innerHTML, /data-spx-expiry="2024"[\s\S]*?>\$20000.00<\/summary>/);
+assert.match(node('spx-financing-yearly').innerHTML, /data-spx-expiry="2026"[\s\S]*?>\$50123.45<\/summary>/);
 assert.ok(html.indexOf('id="box-yearly"') < html.indexOf('id="spx-financing-yearly"'));
 console.log('PASS: SPX opening-year financing, historical matured entries, missing dates, ticker filtering, persistence and Portfolio rendering.');
+
+// Each opening year's breakdown reconciles to its principal and groups matching expiries.
+ctx.expiryBoxes = [
+ {...box,creditReceived:50000,dateOpened:'2026-11-01',expDate:'2027-11-01'},
+ {...box,creditReceived:100.11,dateOpened:'2026-12-01',expDate:'2027-12-01'},
+ {...box,creditReceived:200.22,dateOpened:'2026-12-15',expDate:'2028-01-01'},
+ {...box,creditReceived:300,dateOpened:'2027-01-01',expDate:'2028-01-01'}
+];
+const expiryRows = run('spxFinancingTotals(expiryBoxes).rows');
+assert.deepEqual(expiryRows[0],{year:2026,total:50300.33,expiries:[{year:2027,total:50100.11},{year:2028,total:200.22}]});
+for (const row of expiryRows) assert.equal(Math.round(row.expiries.reduce((sum,e)=>sum+e.total,0)*100),Math.round(row.total*100));
+const expiryHTML = run('spxFinancingTable(expiryBoxes)');
+assert.match(expiryHTML,/<details data-spx-expiry="2026">/);
+assert.doesNotMatch(expiryHTML,/<details[^>]* open/);
+assert.match(expiryHTML,/<th>Expiry year<\/th><th>Amount financed<\/th>/);
+assert.match(expiryHTML,/<td>2027<\/td><td>\$50100.11<\/td>/);
+assert.match(expiryHTML,/<td>2028<\/td><td>\$200.22<\/td>/);
+console.log('PASS: collapsed expiry breakdown, aggregation, principal reconciliation and opening-year isolation.');
