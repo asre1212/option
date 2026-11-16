@@ -71,3 +71,26 @@ assert.match(run('boxYearTable([box],true)'), /Final MTM cost/);
 assert.match(node('box-yearly').innerHTML, /\$31800\.00/);
 assert.doesNotMatch(node('box-yearly').innerHTML, /<td>2025<\/td>/);
 console.log('PASS: maturity repayments, aggregation, missing dates, column order and open-only filtering.');
+
+// Opening-year financing includes matured SPX records, never prorates to expiry.
+ctx.financingBoxes = [
+  {...box,creditReceived:50000,dateOpened:'2026-11-01',expDate:'2027-11-01'},
+  {...box,ticker:'SPX',creditReceived:123.45,dateOpened:'2026-12-31'},
+  {...box,creditReceived:10000,dateOpened:'2027-01-01'},
+  {...box,creditReceived:20000,dateOpened:'2024-01-01',expDate:'2025-01-01'},
+  {...box,ticker:'NDX',creditReceived:99999},
+  {...box,dateOpened:null}, {...box,dateOpened:'2026-02-30'}
+];
+assert.deepEqual(run('spxFinancingTotals(financingBoxes)'), {
+  rows:[{year:2024,total:20000},{year:2026,total:50123.45},{year:2027,total:10000}], missing:2
+});
+const before = JSON.stringify(ctx.financingBoxes);
+assert.match(run('spxFinancingTable(financingBoxes)'), /2 SPX entries need an opening date/);
+assert.equal(JSON.stringify(ctx.financingBoxes),before,'Summary does not mutate saved records');
+assert.deepEqual(run('spxFinancingTotals([])'),{rows:[],missing:0});
+data.boxSpreads=JSON.parse(JSON.stringify(ctx.financingBoxes));
+vm.runInContext('renderBoxSpreads()',ctx);
+assert.match(node('spx-financing-yearly').innerHTML, /<td>2024<\/td><td>\$20000.00/);
+assert.match(node('spx-financing-yearly').innerHTML, /<td>2026<\/td><td>\$50123.45/);
+assert.ok(html.indexOf('id="box-yearly"') < html.indexOf('id="spx-financing-yearly"'));
+console.log('PASS: SPX opening-year financing, historical matured entries, missing dates, ticker filtering, persistence and Portfolio rendering.');

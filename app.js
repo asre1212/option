@@ -739,6 +739,28 @@ function boxYearTable(boxes, actual = false) {
     ${rows.map(r=>`<tr><td>${r.year}</td><td>${r.estimate === null ? 'Needs trade dates' : fmtMoney(r.estimate)}</td>${!actual ? `<td>${fmtMoney((dueByYear.get(r.year) || 0)/100)}</td>` : ''}${actual ? `<td>${missing ? 'Needs trade dates' : r.final !== null ? fmtMoney(r.final) : r.ended ? 'Needs year-end values' : 'Pending'}</td>` : ''}</tr>`).join('')}
     </tbody></table></div>` : '');
 }
+// Lifetime SPX borrowing: each credit belongs entirely to its opening year.
+// Use all saved boxes so maturity and calendar rollover never remove history.
+function spxFinancingTotals(boxes) {
+  const totals = new Map();
+  let missing = 0;
+  for (const box of boxes) {
+    if (String(box.ticker).toUpperCase().replace(/^\$/, '') !== 'SPX') continue;
+    if (!validBoxDate(box.dateOpened)) { missing++; continue; }
+    if (!Number.isFinite(box.creditReceived) || box.creditReceived <= 0) continue;
+    const year = Number(box.dateOpened.slice(0,4));
+    totals.set(year, (totals.get(year) || 0) + Math.round(box.creditReceived * 100));
+  }
+  return {rows:[...totals].sort((a,b)=>a[0]-b[0]).map(([year,cents])=>({year,total:cents/100})), missing};
+}
+function spxFinancingTable(boxes) {
+  const {rows,missing} = spxFinancingTotals(boxes);
+  return (rows.length ? `<div style="overflow-x:auto"><table style="width:100%;text-align:left;font-size:13px;border-spacing:0 10px">
+    <thead><tr><th>Year opened</th><th>Total financed</th></tr></thead><tbody>
+    ${rows.map(row=>`<tr><td>${row.year}</td><td>${fmtMoney(row.total)}</td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="stat-sub">No dated SPX financing entries yet.</div>') +
+    (missing ? `<div class="stat-sub">${missing} SPX ${missing === 1 ? 'entry needs' : 'entries need'} an opening date to be included.</div>` : '');
+}
 function boxAnalysisHTML(boxes = loadBoxSpreads()) {
   if (!boxes.length) return '';
   return `<section class="stat-card" style="margin-top:16px" id="box-analysis"><div class="sec-title">Box spreads · by year</div>
@@ -858,6 +880,7 @@ function renderBoxSpreads(d = load()) {
   const sorted = boxes.filter(b => b.expDate > today).sort((a,b)=>a.expDate.localeCompare(b.expDate));
   document.getElementById('box-count').textContent = `${sorted.length} open`;
   document.getElementById('box-yearly').innerHTML = boxYearTable(sorted);
+  document.getElementById('spx-financing-yearly').innerHTML = spxFinancingTable(boxes);
   document.getElementById('box-list').innerHTML = sorted.length ? sorted.map(b => boxPositionCard(b,today)).join('') : '<div class="empty-txt" style="padding:16px 0">No open box spreads. Past contracts and yearly totals are in Analysis.</div>';
 }
 document.addEventListener('click', event => {
