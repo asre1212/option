@@ -60,11 +60,11 @@ console.log('PASS: accounting, persistence, full per-position cards, annualized 
 
 // Repayment is principal plus full interest in the expiration year.
 const repaymentTable = run('boxYearTable([box,{...box,creditReceived:20000,interest:1800},{...box,expDate:"2027-01-01",creditReceived:5000,interest:100}])');
-assert.match(repaymentTable, /<th>Est\. cost<\/th><th>Total due by year<\/th>/);
-assert.match(repaymentTable, /<td>2026<\/td><td>[^<]+<\/td><td>\$0\.00<\/td>/);
-assert.match(repaymentTable, /<td>2027<\/td><td>[^<]+<\/td><td>\$5100\.00<\/td>/);
-assert.match(repaymentTable, /<td>2028<\/td><td>[^<]+<\/td><td>\$32700\.00<\/td>/);
-assert.match(run('boxYearTable([{...box,dateOpened:null}])'), /<td>2028<\/td><td>Needs trade dates<\/td><td>\$10900\.00<\/td>/);
+assert.match(repaymentTable, /<th>Est\. interest<\/th><th>Open boxes expiring<\/th>/);
+assert.match(repaymentTable, /<td>2026<\/td><td>[^<]+<\/td><td aria-label="No open boxes expire this year">—<\/td>/);
+assert.match(repaymentTable, /<td>2027<\/td><td>[^<]+<\/td><td class="box-maturity"><span>Financed <strong>\$5000\.00<\/strong><\/span><span>Total due <strong>\$5100\.00/);
+assert.match(repaymentTable, /<td>2028<\/td><td>[^<]+<\/td><td class="box-maturity"><span>Financed <strong>\$30000\.00<\/strong><\/span><span>Total due <strong>\$32700\.00/);
+assert.match(run('boxYearTable([{...box,dateOpened:null,fees:123}])'), /<td>2028<\/td><td>Needs trade dates<\/td><td class="box-maturity"><span>Financed <strong>\$10000\.00<\/strong><\/span><span>Total due <strong>\$10900\.00/);
 assert.equal(run('boxYearTable([])'), '');
 assert.doesNotMatch(run('boxYearTable([box],true)'), /Total due by year/);
 assert.match(run('boxYearTable([box],true)'), /Final MTM cost/);
@@ -92,7 +92,7 @@ data.boxSpreads=JSON.parse(JSON.stringify(ctx.financingBoxes));
 vm.runInContext('renderBoxSpreads()',ctx);
 assert.match(node('spx-financing-yearly').innerHTML, /data-spx-expiry="2024"[\s\S]*?>\$20000.00<\/summary>/);
 assert.match(node('spx-financing-yearly').innerHTML, /data-spx-expiry="2026"[\s\S]*?>\$50123.45<\/summary>/);
-assert.ok(html.indexOf('id="box-yearly"') < html.indexOf('id="spx-financing-yearly"'));
+assert.match(html, /id="box-yearly-summary"[^>]*>[\s\S]*?id="box-yearly"[\s\S]*?<details class="box-financing-history">[\s\S]*?id="spx-financing-yearly"/);
 console.log('PASS: SPX opening-year financing, historical matured entries, missing dates, ticker filtering, persistence and Portfolio rendering.');
 
 // Each opening year's breakdown reconciles to its principal and groups matching expiries.

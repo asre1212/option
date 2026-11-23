@@ -79,14 +79,15 @@ without expanding a disclosure; only the year-end value inputs are collapsible.
 There is no early close or roll workflow. Expiration is derived from the local
 calendar date; daily refresh removes matured records from Portfolio.
 
-**Interest by year** replaces YTD: total cost is allocated by calendar days over
-trade date through expiration, with cents reconciled in the final year. These
-are planning estimates, not tax MTM values. Portfolio shows **Total due by year**
-to the right of Est. cost: credit received plus total interest for open boxes
-expiring in that year, including boxes with missing trade dates.
-The per-contract annualized rate
-and live entry preview remain unchanged. Missing/invalid trade dates are flagged
-rather than guessed; edit the actual trade date to include those contracts.
+Portfolio shows one **Box spread financing by year** card. For the same open
+boxes expiring in each year, **Financed** is principal received and **Total due**
+is principal plus full-term interest, excluding separately recorded fees. Boxes
+without trade dates still count toward those maturity totals. **Est. interest**
+allocates interest by calendar days over the term, with cents reconciled in the
+final year. It is a planning estimate, not tax MTM, and excludes missing or
+invalid terms. Expand **SPX financing history by opening year** within the same
+card to see cash received on all dated SPX/SPXW contracts, including matured ones,
+and drill down by expiry. The per-contract annualized rate is unchanged.
 
 Analysis shows all years and contracts, including expired ones. For each completed
 year before expiration, enter the broker's year-end net debit to close the entire
