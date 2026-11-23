@@ -8,7 +8,7 @@
    connection, once each has been fetched successfully one time.
 ───────────────────────────────────────── */
 
-const CACHE_VERSION  = 'options-tracker-v16';
+const CACHE_VERSION  = 'options-tracker-v17';
 const RUNTIME_CACHE  = 'options-tracker-runtime-v1';
 const CACHE_ASSETS   = [
   './',
