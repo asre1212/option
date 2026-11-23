@@ -87,7 +87,10 @@ allocates interest by calendar days over the term, with cents reconciled in the
 final year. It is a planning estimate, not tax MTM, and excludes missing or
 invalid terms. Expand **SPX financing history by opening year** within the same
 card to see cash received on all dated SPX/SPXW contracts, including matured ones,
-and drill down by expiry. The per-contract annualized rate is unchanged.
+and drill down by expiry. On January 1 (local time), the prior calendar year
+leaves the main table. Its calendar-day interest estimate, summed across all
+dated saved boxes including matured ones, is under **Past-year estimated
+interest** in the same history disclosure. Analysis and annualized rates are unchanged.
 
 Analysis shows all years and contracts, including expired ones. For each completed
 year before expiration, enter the broker's year-end net debit to close the entire

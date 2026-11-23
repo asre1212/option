@@ -1033,6 +1033,11 @@
     .box-financing-history > summary{cursor:pointer;font-size:13px;line-height:1.5;padding:5px 0}
     #spx-financing-yearly th:last-child,#spx-financing-yearly td:last-child{text-align:right;padding-left:8px}
     #spx-financing-yearly details table{margin-top:6px}
+    .box-history-interest{border-top:1px solid var(--border);margin-top:14px;padding-top:12px}
+    .box-history-interest table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums;margin-bottom:8px}
+    .box-history-interest th,.box-history-interest td{border-bottom:1px solid var(--border);padding:9px 0;text-align:left}
+    .box-history-interest th:last-child,.box-history-interest td:last-child{text-align:right;padding-left:8px}
+    .box-history-interest tbody th{font-weight:400}
     @media(max-width:390px){
       #box-yearly th:last-child,#box-yearly td:last-child{padding-left:10px}
       #box-yearly .box-maturity span{gap:6px;font-size:12px}
@@ -1099,11 +1104,12 @@
           <div class="stat-card" id="box-yearly-summary" style="margin-bottom:12px">
             <div class="stat-label">Box spread financing by year</div>
             <div id="box-yearly"></div>
-            <div class="stat-sub box-yearly-note">Only open boxes count here. Total due is principal plus full-term interest. Estimated interest is spread across calendar years.</div>
+            <div class="stat-sub box-yearly-note">Current and future years only. Total due is principal plus full-term interest on open boxes. Past-year estimated interest is in history below.</div>
             <details class="box-financing-history">
               <summary>SPX financing history by opening year</summary>
               <div id="spx-financing-yearly"></div>
               <div class="stat-sub">Includes both open and matured SPX and SPXW boxes. Expand an opening-year total to see when they expire.</div>
+              <div id="box-history-interest"></div>
             </details>
             <div id="spx-fees-total" class="stat-sub"></div>
           </div>
@@ -2069,6 +2075,6 @@
   <button class="toast-btn" id="toast-btn" onclick="toastAction()">Undo</button>
 </div>
 
-<script src="./app.js?v=20261123-box-financing"></script>
+<script src="./app.js?v=20261123-box-history"></script>
 </body>
 </html>

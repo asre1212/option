@@ -741,14 +741,16 @@ function boxYearTotals(boxes, today = boxToday()) {
   return [...totals.values()].sort((a,b)=>a.year-b.year).map(row=>({...row,
     estimate:Math.round(row.estimate*100)/100, final:row.complete ? Math.round(row.final*100)/100 : null}));
 }
-function boxYearTable(boxes, actual = false) {
-  const rows = boxYearTotals(boxes);
+function boxYearTable(boxes, actual = false, today = boxToday()) {
+  const currentYear = Number(today.slice(0,4));
+  const rows = boxYearTotals(boxes,today).filter(row=>actual || row.year >= currentYear);
   // Compare principal and repayment for the same open contracts in each expiry year.
   // Calendar-year interest estimates remain independent of the maturity cash flows.
   const maturities = new Map();
   if (!actual) {
     for (const box of boxes) {
       const year = Number(box.expDate.slice(0,4));
+      if (year < currentYear) continue;
       const principal = Math.round(box.creditReceived*100);
       const total = maturities.get(year) || {principal:0, due:0};
       total.principal += principal;
@@ -768,6 +770,20 @@ function boxYearTable(boxes, actual = false) {
     <thead><tr><th>Year</th><th>${actual ? 'Est. cost' : 'Est. interest'}</th>${actual ? '<th>Final MTM cost</th>' : '<th>Open boxes expiring</th>'}</tr></thead><tbody>
     ${rows.map(r=>`<tr><td>${r.year}</td><td>${r.estimate === null ? 'Needs trade dates' : fmtMoney(r.estimate)}</td>${actual ? `<td>${missing ? 'Needs trade dates' : r.final !== null ? fmtMoney(r.final) : r.ended ? 'Needs year-end values' : 'Pending'}</td>` : maturityCell(r.year)}</tr>`).join('')}
     </tbody></table></div>` : '');
+}
+// Closed calendar years remain available even after the underlying boxes mature.
+function boxHistoricalInterestTable(boxes, today = boxToday()) {
+  const currentYear = Number(today.slice(0,4));
+  const years = boxYearTotals(boxes,today).filter(row=>row.year < currentYear).reverse();
+  if (!years.length) return '';
+  const incomplete = boxes.some(box=>boxTermDays(box) === null);
+  return `<div class="box-history-interest">
+    <div class="stat-label">Past-year estimated interest</div>
+    <table><thead><tr><th scope="col">Calendar year</th><th scope="col">Estimated interest</th></tr></thead><tbody>
+      ${years.map(row=>`<tr><th scope="row">${row.year}</th><td>${fmtMoney(row.estimate)}</td></tr>`).join('')}
+    </tbody></table>
+    <div class="stat-sub">All recorded box spreads, including matured ones. Interest is allocated by calendar days, not by opening year. ${incomplete ? 'Entries with missing or invalid dates are excluded. ' : ''}Final mark-to-market figures are in Analysis.</div>
+  </div>`;
 }
 // Lifetime SPX borrowing: each credit belongs entirely to its opening year.
 // Use all saved boxes so maturity and calendar rollover never remove history.
@@ -939,8 +955,9 @@ function renderBoxSpreads(d = load()) {
   }
   const sorted = boxes.filter(b => b.expDate > today).sort((a,b)=>a.expDate.localeCompare(b.expDate));
   document.getElementById('box-count').textContent = `${sorted.length} open`;
-  document.getElementById('box-yearly').innerHTML = boxYearTable(sorted) || '<div class="stat-sub">No open boxes with upcoming repayments.</div>';
+  document.getElementById('box-yearly').innerHTML = boxYearTable(sorted,false,today) || '<div class="stat-sub">No open boxes with upcoming repayments.</div>';
   document.getElementById('spx-financing-yearly').innerHTML = spxFinancingTable(boxes);
+  document.getElementById('box-history-interest').innerHTML = boxHistoricalInterestTable(boxes,today);
   document.getElementById('box-list').innerHTML = sorted.length ? sorted.map(b => boxPositionCard(b,today)).join('') : '<div class="empty-txt" style="padding:16px 0">No open box spreads. Past contracts and yearly totals are in Analysis.</div>';
 }
 document.addEventListener('click', event => {

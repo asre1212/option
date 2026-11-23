@@ -8,12 +8,12 @@
    connection, once each has been fetched successfully one time.
 ───────────────────────────────────────── */
 
-const CACHE_VERSION  = 'options-tracker-v17';
+const CACHE_VERSION  = 'options-tracker-v18';
 const RUNTIME_CACHE  = 'options-tracker-runtime-v1';
 const CACHE_ASSETS   = [
   './',
   './index.html',
-  './app.js?v=20261123-box-financing',
+  './app.js?v=20261123-box-history',
   './options-tracker.html',
   './manifest.json',
   './icon.svg'

@@ -112,3 +112,16 @@ assert.match(expiryHTML,/<th>Expiry year<\/th><th>Amount financed<\/th>/);
 assert.match(expiryHTML,/<td>2027<\/td><td>\$50100.11<\/td>/);
 assert.match(expiryHTML,/<td>2028<\/td><td>\$200.22<\/td>/);
 console.log('PASS: collapsed expiry breakdown, aggregation, principal reconciliation and opening-year isolation.');
+
+// Keep the same local-year cutoff for the dashboard and its historical ledger.
+ctx.rolloverOpen = {...box,dateOpened:'2026-07-01',expDate:'2027-07-01',interest:365};
+ctx.rolloverMatured = {...box,id:'matured-2026',dateOpened:'2026-01-01',expDate:'2026-12-15',interest:25};
+assert.match(run("boxYearTable([rolloverOpen],false,'2026-12-31')"), /<td>2026<\/td><td>\$184\.00/);
+const rolled = run("boxYearTable([rolloverOpen],false,'2027-01-01')");
+assert.doesNotMatch(rolled, /<td>2026<\/td>/);
+assert.match(rolled, /<td>2027<\/td><td>\$181\.00/);
+assert.equal(run("boxHistoricalInterestTable([rolloverOpen,rolloverMatured],'2026-12-31')"),'');
+assert.match(run("boxHistoricalInterestTable([rolloverOpen,rolloverMatured],'2027-01-01')"), /<th scope="row">2026<\/th><td>\$209\.00/);
+assert.match(run("boxYearTable([rolloverOpen],true,'2027-01-01')"), /<td>2026<\/td>/);
+assert.match(html, /<details class="box-financing-history">[\s\S]*?id="box-history-interest"[\s\S]*?<\/details>/);
+console.log('PASS: January 1 cutover, all recorded historical interest, and unchanged Analysis history.');
