@@ -743,22 +743,30 @@ function boxYearTotals(boxes, today = boxToday()) {
 }
 function boxYearTable(boxes, actual = false) {
   const rows = boxYearTotals(boxes);
-  // Repayment is due at maturity, independently of interest allocation.
-  const dueByYear = new Map();
+  // Compare principal and repayment for the same open contracts in each expiry year.
+  // Calendar-year interest estimates remain independent of the maturity cash flows.
+  const maturities = new Map();
   if (!actual) {
     for (const box of boxes) {
       const year = Number(box.expDate.slice(0,4));
-      const cents = Math.round(box.creditReceived*100) + Math.round(box.interest*100);
-      dueByYear.set(year, (dueByYear.get(year) || 0) + cents);
+      const principal = Math.round(box.creditReceived*100);
+      const total = maturities.get(year) || {principal:0, due:0};
+      total.principal += principal;
+      total.due += principal + Math.round(box.interest*100);
+      maturities.set(year, total);
       if (!rows.some(row=>row.year === year)) rows.push({year, estimate:null});
     }
     rows.sort((a,b)=>a.year-b.year);
   }
   const missing = boxes.some(b=>boxTermDays(b) === null);
-  return (missing ? '<div class="stat-sub">Set the actual trade date on entries with missing or invalid terms before calculating all yearly totals.</div>' : '') +
+  const maturityCell = year => {
+    const total = maturities.get(year);
+    return total ? `<td class="box-maturity"><span>Financed <strong>${fmtMoney(total.principal/100)}</strong></span><span>Total due <strong>${fmtMoney(total.due/100)}</strong></span></td>` : '<td aria-label="No open boxes expire this year">—</td>';
+  };
+  return (missing ? `<div class="stat-sub">${actual ? 'Set the actual trade date on entries with missing or invalid terms before calculating all yearly totals.' : 'Interest estimates exclude boxes with missing or invalid trade dates.'}</div>` : '') +
     (rows.length ? `<div style="overflow-x:auto"><table style="width:100%;text-align:left;font-size:13px;border-spacing:0 10px">
-    <thead><tr><th>Year</th><th>Est. cost</th>${actual ? '<th>Final MTM cost</th>' : '<th>Total due by year</th>'}</tr></thead><tbody>
-    ${rows.map(r=>`<tr><td>${r.year}</td><td>${r.estimate === null ? 'Needs trade dates' : fmtMoney(r.estimate)}</td>${!actual ? `<td>${fmtMoney((dueByYear.get(r.year) || 0)/100)}</td>` : ''}${actual ? `<td>${missing ? 'Needs trade dates' : r.final !== null ? fmtMoney(r.final) : r.ended ? 'Needs year-end values' : 'Pending'}</td>` : ''}</tr>`).join('')}
+    <thead><tr><th>Year</th><th>${actual ? 'Est. cost' : 'Est. interest'}</th>${actual ? '<th>Final MTM cost</th>' : '<th>Open boxes expiring</th>'}</tr></thead><tbody>
+    ${rows.map(r=>`<tr><td>${r.year}</td><td>${r.estimate === null ? 'Needs trade dates' : fmtMoney(r.estimate)}</td>${actual ? `<td>${missing ? 'Needs trade dates' : r.final !== null ? fmtMoney(r.final) : r.ended ? 'Needs year-end values' : 'Pending'}</td>` : maturityCell(r.year)}</tr>`).join('')}
     </tbody></table></div>` : '');
 }
 // Lifetime SPX borrowing: each credit belongs entirely to its opening year.
@@ -931,7 +939,7 @@ function renderBoxSpreads(d = load()) {
   }
   const sorted = boxes.filter(b => b.expDate > today).sort((a,b)=>a.expDate.localeCompare(b.expDate));
   document.getElementById('box-count').textContent = `${sorted.length} open`;
-  document.getElementById('box-yearly').innerHTML = boxYearTable(sorted);
+  document.getElementById('box-yearly').innerHTML = boxYearTable(sorted) || '<div class="stat-sub">No open boxes with upcoming repayments.</div>';
   document.getElementById('spx-financing-yearly').innerHTML = spxFinancingTable(boxes);
   document.getElementById('box-list').innerHTML = sorted.length ? sorted.map(b => boxPositionCard(b,today)).join('') : '<div class="empty-txt" style="padding:16px 0">No open box spreads. Past contracts and yearly totals are in Analysis.</div>';
 }

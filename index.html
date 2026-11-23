@@ -13,6 +13,10 @@
   <title>Options Tracker</title>
   <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
+    .box-maturity span{display:block;white-space:nowrap}
+    .box-maturity span + span{margin-top:4px}
+    .box-financing-history{margin-top:12px;padding-top:10px;border-top:1px solid var(--border)}
+    .box-financing-history > summary{cursor:pointer;font-size:13px}
     [hidden]{display:none!important}
     *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     :root{
@@ -1074,16 +1078,16 @@
             <span class="sec-count" id="box-count">0</span>
           </div>
           <div id="box-list"></div>
-          <div class="stat-card" style="margin-bottom:12px">
-            <div class="stat-label">Interest by year · open contracts</div>
+          <div class="stat-card" id="box-yearly-summary" style="margin-bottom:12px">
+            <div class="stat-label">Box spread financing by year</div>
             <div id="box-yearly"></div>
-            <div class="stat-sub">Calendar-day interest estimates. Total due is credit plus interest, grouped by expiration year. Final yearly mark-to-market totals are in Analysis.</div>
-          </div>
-          <div class="stat-card" style="margin-bottom:12px">
-            <div class="stat-label">SPX total financed by year</div>
-            <div id="spx-financing-yearly"></div>
+            <div class="stat-sub">Financed is cash received. Total due adds the full interest for those same open boxes at expiry. Estimated interest is spread across calendar years. Final mark-to-market figures are in Analysis.</div>
+            <details class="box-financing-history">
+              <summary>SPX financing history by opening year</summary>
+              <div id="spx-financing-yearly"></div>
+              <div class="stat-sub">Cash received, including matured SPX and SPXW boxes. Expand an opening-year total for its expiry breakdown.</div>
+            </details>
             <div id="spx-fees-total" class="stat-sub"></div>
-            <div class="stat-sub">Credit received grouped by the year each SPX box spread was opened. Expand a total to see amounts grouped by expiry year. Includes matured contracts; historical years remain in the tally. Editing or deleting an entry updates its total.</div>
           </div>
         </section>
       </div>
@@ -2047,6 +2051,6 @@
   <button class="toast-btn" id="toast-btn" onclick="toastAction()">Undo</button>
 </div>
 
-<script src="./app.js?v=20261116-scan-boxes"></script>
+<script src="./app.js?v=20261123-box-financing"></script>
 </body>
 </html>

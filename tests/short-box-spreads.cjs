@@ -37,6 +37,16 @@ const server = http.createServer((req,res) => {
     await page.click('#add-submit');
     assert.match(await page.textContent('#box-yearly'),/2026/);
     assert.match(await page.textContent('#box-yearly'),/2027/);
+    const yearlySummary = page.locator('#box-yearly-summary');
+    assert.equal(await yearlySummary.count(), 1);
+    assert.match(await yearlySummary.locator('tr', {hasText:'2027'}).innerText(), /Financed \$10,000\.00\s+Total due \$10,500\.00/);
+    const history = yearlySummary.locator('.box-financing-history');
+    assert.equal(await history.evaluate(el=>el.open), false);
+    await history.locator(':scope > summary').click();
+    await history.locator('[data-spx-expiry="2026"] > summary').click();
+    assert.match(await history.locator('[data-spx-expiry="2026"] tbody').innerText(), /2027\s+\$10,000\.00/);
+    await history.locator(':scope > summary').click();
+    assert.equal(await yearlySummary.evaluate(el=>el.scrollWidth <= el.clientWidth), true);
     assert.deepEqual(await page.evaluate(()=>weightedStats()),baseline);
     const calculations = await page.evaluate(()=>{
       const box = {creditReceived:10000,interest:900,dateOpened:'2026-07-01',expDate:'2028-07-01',yearEndValues:{2026:10300,2027:10200}};
@@ -62,6 +72,8 @@ const server = http.createServer((req,res) => {
     await page.clock.setSystemTime(new Date('2027-09-25T12:00:00-04:00'));
     await page.evaluate(()=>{refreshBoxCalendar();renderAnalysis();});
     assert.equal(await page.locator('#box-list .trade-card').count(),0);
+    assert.match(await yearlySummary.locator('#box-yearly').innerText(), /No open boxes/);
+    assert.match(await history.locator('[data-spx-expiry="2026"] > summary').textContent(), /\$10,000\.00/);
     assert.equal(await page.evaluate(()=>loadBoxSpreads().length),1);
     assert.match(await page.textContent('#box-analysis'),/Needs year-end values/);
     await page.evaluate(()=>{document.getElementById('tab-analysis').classList.add('active');document.querySelector('#box-analysis details').open=true;});
