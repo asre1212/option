@@ -8,12 +8,12 @@
    connection, once each has been fetched successfully one time.
 ───────────────────────────────────────── */
 
-const CACHE_VERSION  = 'options-tracker-v19';
+const CACHE_VERSION  = 'options-tracker-v20';
 const RUNTIME_CACHE  = 'options-tracker-runtime-v1';
 const CACHE_ASSETS   = [
   './',
   './index.html',
-  './app.js?v=20261127-auto-backup',
+  './app.js?v=20261127-files-backup',
   './auto-backup.js',
   './options-tracker.html',
   './manifest.json',

@@ -1,25 +1,26 @@
-/* Local, opt-in two-copy recovery. App adapters explicitly select saved data. */
+/* Files-folder-only automatic backups. App adapters explicitly select saved data. */
 (function (g) {
   "use strict";
   const format = 'local-auto-backup', version = 1;
   const copy = JSON.stringify;
   function create({id,name,read,validate,apply,serialize,parse,canRestore}) {
     if (!/^[a-z0-9-]+$/.test(id) || [read,validate,apply].some(x=>typeof x!=='function')) throw new Error('Invalid Auto Backup adapter');
-    const key='auto-backup-v1:'+id;
-    const blank=()=>({enabled:false,slots:[],seq:0,folder:null,folderToken:null});
+    const key='auto-backup-files-v2:'+id;
+    const legacyKey='auto-backup-v1:'+id;
     const state=()=>{
       const raw=localStorage.getItem(key);
-      if(!raw)return blank();
-      const s=JSON.parse(raw);
-      if(typeof s.enabled!=='boolean'||!Array.isArray(s.slots)||s.slots.length>2||!Number.isSafeInteger(s.seq)||s.seq<0)throw new Error('Unreadable Auto Backup metadata.');
-      return s;
+      if(!raw)return {folder:null,folderToken:null};
+      const value=JSON.parse(raw);
+      if(value.folder&&!/^[a-z0-9-]{8,80}$/i.test(value.folderToken||''))throw new Error('Unreadable backup folder settings.');
+      return value;
     };
-    const persist=s=>localStorage.setItem(key,copy(s));
+    // Connection metadata only. No backup payload is ever written to app or browser storage.
+    const persist=s=>localStorage.setItem(key,JSON.stringify({folder:s.folder?{name:s.folder.name}:null,folderToken:s.folderToken||null}));
     const unpack=item=>{
       if(!item||item.format!==format||item.version!==version||item.app!==id||typeof item.savedAt!=='string'||!Number.isSafeInteger(item.seq))throw new Error('That file is not an Auto Backup for '+name+'.');
       return validate(item.data);
     };
-    let panel, issue='', external='', busy=Promise.resolve();
+    let panel, issue='', external='', busy=Promise.resolve(), folderCopies=[], generation=0;
     const supportsFolder=typeof g.showDirectoryPicker==='function' && !!g.indexedDB;
     function useHandle(mode,action) {
       return new Promise((resolve,reject)=>{
@@ -37,90 +38,110 @@
         };
       });
     }
-    async function syncFolder(s,allowPrompt) {
-      if(!supportsFolder||!s.folder||!s.slots.length)return;
+    const slotName=(cfg,i)=>id+'-auto-backup-'+cfg.folderToken+'-'+i+'.json';
+    async function handleFor(prompt){
       const handle=await useHandle('readonly',db=>db.get(id));
-      if(!handle)throw new Error('Reconnect the backup folder.');
+      if(!handle)throw new Error('Choose the backup folder again.');
       const mode={mode:'readwrite'};
       let permission=await handle.queryPermission(mode);
-      if(permission!=='granted'&&allowPrompt)permission=await handle.requestPermission(mode);
-      if(permission!=='granted')throw new Error('Reconnect the backup folder to resume Files copies.');
-      // Previous first. The opposite slot remains intact while one slot is replaced.
-      for(const entry of s.slots.slice().reverse()){
-        const basename=id+'-auto-backup-'+s.folder.token+'-'+(entry.seq%2+1)+'.json';
-        let file;
-        try{
-          file=await handle.getFileHandle(basename);
-          const content=await (await file.getFile()).text();
-          if(content){
-            const old=JSON.parse(content);
-            if(old.folderToken!==s.folder.token||old.app!==id||old.format!==format)throw new Error('A file name is in use. Choose another backup folder.');
-            if(old.seq>=entry.seq)continue;
-          }
-        }catch(e){if(e.name!=='NotFoundError')throw e;file=await handle.getFileHandle(basename,{create:true});}
-        const body=copy({...entry,folderToken:s.folder.token});
-        const writer=await file.createWritable();
-        try{await writer.write(body);await writer.close();}
-        catch(e){try{await writer.abort();}catch{}throw e;}
-        if(await (await file.getFile()).text()!==body)throw new Error('The Files copy did not verify.');
-      }
-      external='Files folder copy verified.';
+      if(permission!=='granted'&&prompt)permission=await handle.requestPermission(mode);
+      if(permission!=='granted')throw new Error('Reconnect the folder to resume automatic backups.');
+      return handle;
     }
-    function queue(s){
-      if(!supportsFolder||!s.folder)return;
-      busy=busy.then(()=>syncFolder(s,false)).catch(e=>{external=e.message||'Could not save to the folder.';}).finally(update);
+    async function readSlot(handle,cfg,i){
+      try {
+        const file=await handle.getFileHandle(slotName(cfg,i)), text=await (await file.getFile()).text();
+        // Empty file can result from an interrupted first creation. Do not blindly overwrite it.
+        if(!text)throw new Error('An empty backup slot needs inspection. Choose a different folder or remove the empty file in Files.');
+        const item=JSON.parse(text);
+        if(item.folderToken!==cfg.folderToken)throw new Error('A file name is in use. Choose a different folder.');
+        unpack(item);
+        return {i,file,item};
+      }catch(e){if(e.name==='NotFoundError')return {i,file:null,item:null};throw e;}
+    }
+    async function sync(cfg,encoded,prompt,gen){
+      if(gen!==generation)return;
+      const handle=await handleFor(prompt);
+      const slots=await Promise.all([readSlot(handle,cfg,1),readSlot(handle,cfg,2)]);
+      if(gen!==generation)return;
+      const ranked=slots.filter(s=>s.item).sort((a,b)=>b.item.seq-a.item.seq);
+      folderCopies=ranked.map(s=>s.item);
+      if(encoded===null||ranked[0]&&copy(ranked[0].item.data)===encoded){
+        external=folderCopies.length?'Files folder connected.':'Folder connected; no backups have been saved yet.';
+        return;
+      }
+      const seq=(ranked[0]?.item.seq||0)+1;
+      if(!Number.isSafeInteger(seq))throw new Error('Invalid backup sequence.');
+      const item={format,version,app:id,savedAt:new Date().toISOString(),seq,data:JSON.parse(encoded),folderToken:cfg.folderToken};
+      const target=slots.find(s=>!s.item)||ranked.at(-1);
+      const file=target.file||await handle.getFileHandle(slotName(cfg,target.i),{create:true});
+      const body=copy(item), writer=await file.createWritable();
+      try{await writer.write(body);await writer.close();}
+      catch(e){try{await writer.abort();}catch{}throw e;}
+      if(await (await file.getFile()).text()!==body)throw new Error('The Files backup did not verify.');
+      folderCopies=[item,...ranked.filter(s=>s.i!==target.i).map(s=>s.item)].slice(0,2);
+      external='Latest backup saved to the selected folder.';
+    }
+    function queued(cfg,encoded,prompt){
+      const gen=generation;
+      busy=busy.then(()=>sync(cfg,encoded,prompt,gen)).catch(e=>{external=e.message||'Could not save to the folder.';}).finally(update);
+      return busy;
     }
     function capture(value){
       try{
-        const s=state();
-        if(!s.enabled)return false;
-        const data=validate(value===undefined?read():value);
-        if(copy(data)===copy(s.slots[0]?.data)){issue='';return false;}
-        const seq=s.seq+1;
-        const item={format,version,app:id,savedAt:new Date().toISOString(),seq,data};
-        const next={...s,seq,slots:[item,...s.slots].slice(0,2)};
-        persist(next);issue='';queue(next);update();return true;
-      }catch(e){issue='Auto Backup could not save. Your previous recovery copies were not replaced.';update();return false;}
+        if(!supportsFolder)return false;
+        const cfg=state();
+        if(!cfg.folder)return false;
+        const encoded=copy(validate(value===undefined?read():value));
+        if(typeof encoded!=='string')throw new Error('Invalid backup data.');
+        queued(cfg,encoded,false);return true;
+      }catch(e){issue=e.message||'Could not prepare backup.';update();return false;}
     }
-    function enable(){
-      const s=state();
-      persist({...s,enabled:true});
-      if(!capture()&&issue)throw new Error(issue);
-      update();
+    function legacyState(){
+      try{return JSON.parse(localStorage.getItem(legacyKey)||'null');}catch{return null;}
     }
-    function toggle(){
-      try{
-        const s=state();
-        if(s.enabled)persist({...s,enabled:false});
-        else enable();
-        issue=''; update();
-      }catch(e){issue=e.message||'Auto Backup setup failed.';update();}
+    function migrateFolder(){
+      if(!supportsFolder||localStorage.getItem(key))return;
+      const old=legacyState(),token=old?.folder?.token;
+      if(old?.enabled&&old.folder?.name&&/^[a-z0-9-]{8,80}$/i.test(token||'')){
+        persist({folder:{name:old.folder.name},folderToken:token});
+      }
     }
     async function connect(){
       try{
         if(!supportsFolder)return;
         const handle=await g.showDirectoryPicker({id:id+'-backup',mode:'readwrite'});
         await busy;
-        const s=state();
+        const cfg=state();
+        const oldToken=legacyState()?.folder?.token;
+        const token=cfg.folderToken||(/^[a-z0-9-]{8,80}$/i.test(oldToken||'')?oldToken:null)||(g.crypto?.randomUUID?.()||Date.now().toString(36)+Math.random().toString(36).slice(2)).replace(/[^a-z0-9-]/gi,'');
         await useHandle('readwrite',db=>db.put(handle,id));
-        const token=s.folderToken||s.folder?.token||(g.crypto?.randomUUID?.()||Date.now().toString(36)+Math.random().toString(36).slice(2)).replace(/[^a-z0-9-]/gi,'');
-        persist({...s,folderToken:token,folder:{name:handle.name,token}});
-        if(!s.enabled)enable();
-        external='Folder selected.';queue(state());update();
+        generation++;folderCopies=[];issue='';
+        persist({folder:{name:handle.name},folderToken:token});
+        external='Folder selected.';capture();update();
       }catch(e){if(e.name!=='AbortError'){external=e.message||'Folder selection failed.';update();}}
     }
     async function reconnect(){
-      try{await busy;await syncFolder(state(),true);}catch(e){external=e.message||'Unable to reconnect.';}update();
+      try{const cfg=state();if(cfg.folder)await queued(cfg,null,true);}catch(e){external=e.message||'Unable to reconnect.';}update();
+    }
+    function disconnect(){
+      try{const cfg=state();generation++;folderCopies=[];persist({...cfg,folder:null});external='Folder disconnected; existing files were not changed.';update();}
+      catch(e){external=e.message;update();}
+    }
+    function legacyCopies(){
+      try{
+        const s=legacyState();
+        return Array.isArray(s?.slots)?s.slots.slice(0,2).filter(item=>{try{unpack(item);return true;}catch{return false;}}):[];
+      }catch{return [];}
     }
     async function restore(item) {
       try{
         const data=unpack(item);
         if(canRestore&&!(await canRestore()))throw new Error('Finish what you are doing before restoring a backup.');
         if(!g.confirm('Restore '+name+' from this copy? It will replace the data this backup covers.'))return;
-        if(state().enabled&&!capture()&&issue&&issue.startsWith('Auto Backup could not save'))throw new Error('Could not keep a copy of your current data. Nothing was restored.');
         const ok=await apply(data);
         if(ok===false)throw new Error('Restore did not complete successfully.');
-        if(state().enabled)capture(data);
+        capture(data);
         issue='Backup restored.';update();
       }catch(e){issue=e.message||'Unable to restore this copy.';update();}
     }
@@ -141,24 +162,31 @@
       const focus=document.activeElement, label=focus?.textContent;
       try{
         const s=state(),h=document.createElement('h2');h.id=key+'-heading';h.textContent='Auto Backup';
-        const helper=paragraph('Keeps the latest two distinct saved copies. On-device copies may be lost if you remove the app or clear its storage. Use Save a copy to keep a separate file.');
+        const helper=paragraph('Auto Backup writes only to the folder you select. It keeps two verified copies there and does not create app or browser backup copies.');
         const status=paragraph(issue||external||'');status.setAttribute('role','status');
-        panel.replaceChildren(h,helper,button(s.enabled?'Pause Auto Backup':'Turn on Auto Backup',toggle));
+        panel.replaceChildren(h,helper);
         if(supportsFolder){
-          panel.append(paragraph(s.folder?'Selected folder: '+s.folder.name:'Choose a writable folder for automatic external copies.'));
+          panel.append(paragraph(s.folder?'Selected folder: '+s.folder.name:'Choose a writable folder to turn on Auto Backup.'));
           if(!s.folder)panel.append(button('Choose folder',connect));
-          else panel.append(button('Reconnect folder',reconnect),button('Disconnect folder',()=>{
-            try{const v=state();persist({...v,folder:null});external='Folder disconnected; previous files were not changed.';update();}
-            catch(e){external=e.message;update();}
-          }),button('Choose another folder',connect));
-        }else panel.append(paragraph('This browser cannot automatically write to an external Files folder. Saving a copy is a manual step.'));
-        for(const [i,item] of s.slots.entries()){
+          else panel.append(button('Reconnect folder',reconnect),button('Disconnect folder',disconnect),button('Choose another folder',connect));
+        }else panel.append(paragraph('This browser does not support automatic writes to a chosen Files folder. You can still save a copy manually.'));
+        function showCopy(item,title){
           const area=document.createElement('section');
-          area.append(paragraph((i===0?'Most recent':'Previous')+' · '+new Date(item.savedAt).toLocaleString()),
-            button('Restore '+(i===0?'most recent':'previous'),()=>restore(item)),
+          area.append(paragraph(title+' · '+new Date(item.savedAt).toLocaleString()),
+            button('Restore '+title.toLowerCase(),()=>restore(item)),
             button('Save a copy',()=>{try{saveFile(item);}catch(e){issue=e.message;update();}}));
           panel.append(area);
         }
+        for(const [i,item] of folderCopies.entries())showCopy(item,i===0?'Most recent':'Previous');
+        const legacy=legacyCopies();
+        if(legacy.length){
+          panel.append(paragraph('Existing recovery copies from an older release are unchanged. No new copies are saved in the app.'));
+          for(const [i,item] of legacy.entries())showCopy(item,i===0?'Older app recovery copy':'Second older app recovery copy');
+        }
+        panel.append(button('Save current copy manually',()=>{try{
+          const data=validate(read());
+          saveFile({format,version,app:id,savedAt:new Date().toISOString(),seq:0,data});
+        }catch(e){issue=e.message;update();}}));
         const input=document.createElement('input');input.type='file';input.accept='.json,application/json';input.hidden=true;
         input.onchange=async ()=>{try{
           if(!input.files?.length)return;
@@ -180,7 +208,9 @@
         document.body.append(panel);
       }
       if(!panel.open)panel.showModal();
+      try{migrateFolder();}catch{}
       update();
+      try{const cfg=state();if(supportsFolder&&cfg.folder)queued(cfg,null,false);}catch{}
       panel.querySelector('button')?.focus();
     }
     function mount(holder){if(holder)holder.append(button('Auto Backup',open));}

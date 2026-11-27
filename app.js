@@ -6,7 +6,7 @@ const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || {trad
 let optionsAutoBackup;
 const save = d => {
   localStorage.setItem(KEY, JSON.stringify(d));
-  optionsAutoBackup?.capture(optionsBackupData(d));
+  optionsAutoBackup?.capture();
 };
 const uid  = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
 const todayStr = () => new Date().toISOString().split('T')[0];
