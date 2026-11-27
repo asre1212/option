@@ -1420,7 +1420,8 @@
               <div class="backup-hdr-sub">transfer to a new iPhone or restore a backup</div>
             </div>
           </div>
-          <div class="backup-cards">
+          <div id="options-auto-backup"></div>
+      <div class="backup-cards">
             <div class="backup-card bc-export" onclick="exportData()" role="button" tabindex="0" onkeydown="if(event.key==='Enter')exportData()">
               <div class="backup-card-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -2075,6 +2076,7 @@
   <button class="toast-btn" id="toast-btn" onclick="toastAction()">Undo</button>
 </div>
 
-<script src="./app.js?v=20261123-box-history"></script>
+<script src="./auto-backup.js"></script>
+<script src="./app.js?v=20261127-auto-backup"></script>
 </body>
 </html>

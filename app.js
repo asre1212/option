@@ -3,7 +3,11 @@
 ═══════════════════════════════════════ */
 const KEY = 'opts_v2';
 const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || {trades:[]} } catch(e) { return {trades:[]} } };
-const save = d => localStorage.setItem(KEY, JSON.stringify(d));
+let optionsAutoBackup;
+const save = d => {
+  localStorage.setItem(KEY, JSON.stringify(d));
+  optionsAutoBackup?.capture(optionsBackupData(d));
+};
 const uid  = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
 const todayStr = () => new Date().toISOString().split('T')[0];
 
@@ -6309,3 +6313,42 @@ backfillSpots(false);
   link.rel='apple-touch-icon'; link.href=c.toDataURL('image/png');
   document.head.appendChild(link);
 })();
+
+/* Backup only the same durable records already available in JSON export. */
+function optionsBackupData(d) {
+  return {trades:d.trades,positions:loadPositions(d),boxSpreads:loadBoxSpreads(d),
+          watchlist:loadWatchlist(d),watchNotes:loadWatchNotes(d),scanNotes:sanitizeScanNotes(d.scanNotes)};
+}
+optionsAutoBackup=AutoBackup.create({
+  id:'options-tracker',name:'Options Tracker',read:()=>optionsBackupData(load()),
+  validate(d){
+    if(!d||typeof d!=='object')throw new Error('Invalid Options Tracker backup.');
+    function checked(value, normalize){
+      if(!Array.isArray(value)||value.length>50000)throw new Error('Invalid record list.');
+      const ids=new Set();
+      return value.map(raw=>{
+        if(!raw||typeof raw.id!=='string'||!/^[a-z0-9_-]{1,40}$/i.test(raw.id)||ids.has(raw.id))throw new Error('Missing or duplicate record ID.');
+        const clean=normalize(raw);
+        if(!clean)throw new Error('An Options Tracker record could not be restored.');
+        ids.add(raw.id);
+        return clean;
+      });
+    }
+    if(!Array.isArray(d.watchlist)||d.watchlist.length>MAX_WATCH||d.watchlist.some(x=>typeof x!=='string'||!TICKER_RE.test(x))||
+       !d.watchNotes||typeof d.watchNotes!=='object'||Array.isArray(d.watchNotes))throw new Error('Invalid watchlist data.');
+    const notes={};
+    for(const [ticker,note] of Object.entries(d.watchNotes)){
+      if(!TICKER_RE.test(ticker)||typeof note!=='string')throw new Error('Invalid watchlist note.');
+      notes[ticker]=note;
+    }
+    return {trades:checked(d.trades,normalizeTrade),positions:checked(d.positions,normalizePosition),boxSpreads:checked(d.boxSpreads,normalizeBoxSpread),
+            watchlist:[...new Set(d.watchlist)],watchNotes:notes,scanNotes:sanitizeScanNotes(d.scanNotes)};
+  },
+  serialize(d,item){return JSON.stringify({version:3,exported:item.savedAt,exportedFrom:'Options Tracker',...d});},
+  parse(text){const d=JSON.parse(text);return {...d,positions:d.positions||[],boxSpreads:d.boxSpreads||[],watchlist:d.watchlist||[],watchNotes:d.watchNotes||{}};},
+  apply(d){
+    localStorage.setItem(KEY,JSON.stringify(d));
+    renderScanNotes();renderActive();updateStats();renderWatchlist();return true;
+  }
+});
+optionsAutoBackup.mount(document.getElementById('options-auto-backup'));
