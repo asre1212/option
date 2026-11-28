@@ -2199,39 +2199,11 @@ function updateStats() {
     roiEl.className   = 'stat-value neu';
   }
 
-  // Committed
-  const lots      = loadPositions(d).filter(p => p.status === 'open');
-  const committed = active.reduce((s,t) => s + tradeCapital(t), 0)
-                  + lots.reduce((s,p) => s + positionCapital(p), 0);
+  // Count the current contract in each open chain, not its prior rolls or share lots.
+  const committed = active.reduce((sum, trade) => sum + tradeCapital(trade), 0);
   document.getElementById('s-committed').textContent = fmtMoney(committed);
   document.getElementById('s-committed-sub').textContent =
-    fmtInt(active.length) + ' position' + (active.length!==1?'s':'')
-    + (lots.length ? ` + ${fmtInt(lots.length)} share lot${lots.length!==1?'s':''}` : '');
-
-  renderBackupReminder();
-}
-
-/* ═══════════════════════════════════════
-   BACKUP REMINDER
-═══════════════════════════════════════ */
-function renderBackupReminder() {
-  const el = document.getElementById('backup-reminder');
-  if (!el) return;
-  const hasTrades = load().trades.length > 0 || loadBoxSpreads().length > 0;
-  const dismissed = sessionStorage.getItem('opts_backup_reminder_dismissed');
-  const ts    = localStorage.getItem('opts_last_export');
-  const stale = !ts || (Date.now() - new Date(ts).getTime()) > 30 * 86400000;
-  if (!hasTrades || dismissed || !stale) { el.innerHTML = ''; return; }
-  el.innerHTML = `
-    <div class="backup-reminder">
-      <div class="backup-reminder-txt">${ts
-        ? 'Your last backup is over 30 days old.'
-        : 'Your trades are only stored on this device.'} Export a backup to keep them safe.</div>
-      <div class="backup-reminder-acts">
-        <button class="br-btn br-primary" onclick="exportData();renderBackupReminder()">Export</button>
-        <button class="br-btn" onclick="sessionStorage.setItem('opts_backup_reminder_dismissed','1');renderBackupReminder()">Later</button>
-      </div>
-    </div>`;
+    `${fmtInt(active.length)} open option chain${active.length === 1 ? '' : 's'}`;
 }
 
 /* ═══════════════════════════════════════
@@ -2520,10 +2492,7 @@ function renderAnalysis() {
       </div>
     </div>`;
 
-  /* ── Concentration & assignment risk ──
-     Committed capital as one number hides the question that matters to a
-     put seller: if everything is assigned, what do I owe, and how much of
-     it rides on a single ticker? */
+  /* ── Concentration: open put obligations plus held share exposure ── */
   const exposure = {};
   active.filter(t => t.type === 'put').forEach(t => {
     exposure[t.ticker] = (exposure[t.ticker] || 0) + currentStrike(t) * 100 * tradeQty(t);
@@ -2531,19 +2500,9 @@ function renderAnalysis() {
   lots.forEach(p => { exposure[p.ticker] = (exposure[p.ticker] || 0) + positionCapital(p); });
   const exposureRows = Object.entries(exposure).sort((a,b) => b[1] - a[1]);
   const totalExposure = exposureRows.reduce((s,[,v]) => s + v, 0);
-  const putObligation = active.filter(t => t.type === 'put')
-    .reduce((s,t) => s + currentStrike(t) * 100 * tradeQty(t), 0);
 
   if (exposureRows.length) {
-    const top = exposureRows[0];
-    const topShare = totalExposure ? top[1] / totalExposure * 100 : 0;
     html += `<div class="bt-preview-hdr">Risk</div>`;
-    if (putObligation > 0) {
-      html += `<div class="risk-note">
-        If every open put is assigned you need <b>${fmtMoney(putObligation)}</b> in cash to take
-        delivery${lots.length ? `, on top of ${fmtMoney(lots.reduce((s,p) => s + positionCapital(p), 0))} already in shares` : ''}.
-      </div>`;
-    }
     html += breakdownCardHTML('Concentration', 'capital at risk by ticker',
       exposureRows.map(([tk, v]) => {
         const share = totalExposure ? v / totalExposure * 100 : 0;
@@ -2556,10 +2515,6 @@ function renderAnalysis() {
           </div>
         </div>`;
       }), ['Ticker', 'Exposure', 'Share', '']);
-    if (topShare >= 40) {
-      html += `<div class="risk-note"><b>${esc(top[0])}</b> is ${fmtPct(topShare)} of everything
-        you have at risk. One earnings miss moves most of the book.</div>`;
-    }
   }
 
   /* ── Capital efficiency: what to close first ── */

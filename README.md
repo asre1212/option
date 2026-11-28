@@ -60,8 +60,7 @@ in your browser's localStorage; nothing is sent to a server.
 - **Batch entry** — bulk-enter historic trades that were never logged, either as
   quick rows or pasted straight from a spreadsheet. See below.
 - **Backup** — export/import JSON backups (validated on import; watchlist and its notes
-  included), Excel export (SheetJS), and a reminder banner when your last backup is over
-  30 days old.
+  included) and Excel export (SheetJS).
 - **Offline** — installable and fully usable with no connection. See below.
 - **Expiry reminders** — an opt-in notification when something is within 5 days of
   expiring, raised when you open or return to the app. The same permission carries the
@@ -499,9 +498,10 @@ actually at risk:
 - **Breakdowns** by term written (0–7d / 8–21d / 22–45d / 46d+), by ticker, and by
   type — each with win rate, P&L and capital-weighted annualized ROI, so patterns
   like "45-day trades beat weeklies" become visible.
-- **Concentration** — capital at risk per ticker, with a warning when one name is
-  40% or more of the book.
-- **Assignment obligation** — the cash needed if every open put is assigned.
+- **Concentration** — open put and share exposure by ticker, with a color cue at 40%.
+- **Portfolio committed capital** — the currently open contract in each option chain,
+  excluding closed chains, prior rolls, and share lots. Covered calls add no separate
+  capital. Box spread financing is tracked separately.
 - **Capital efficiency** — open positions ranked by annualized return, weakest
   flagged, which is the one to close or roll first. The Watchlist tab takes this one
   step further and prices the switch against a live candidate.

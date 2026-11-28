@@ -771,20 +771,6 @@
       font-size:10px;color:var(--amber);line-height:1.6;
     }
     .backup-info b{color:var(--text2)}
-    /* backup reminder banner */
-    .backup-reminder{
-      background:rgba(160,96,16,.07);border:1px solid rgba(160,96,16,.25);
-      border-radius:12px;padding:11px 13px;margin:8px 0 4px;
-      display:flex;align-items:center;gap:10px;
-    }
-    .backup-reminder-txt{flex:1;font-size:10px;color:var(--amber);line-height:1.5}
-    .backup-reminder-acts{display:flex;gap:6px}
-    .br-btn{
-      padding:7px 10px;border-radius:8px;border:1px solid var(--border);
-      background:var(--card);color:var(--text2);font-family:inherit;
-      font-size:9px;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;
-    }
-    .br-btn.br-primary{color:var(--amber);border-color:rgba(160,96,16,.35);background:rgba(160,96,16,.1)}
     /* import confirm sheet */
     .import-preview{
       background:var(--bg);border:1px solid var(--border);
@@ -1078,12 +1064,11 @@
           <div class="stat-card wide">
             <div class="stat-label">Committed Capital</div>
             <div class="stat-value neu" id="s-committed">$0.00</div>
-            <div class="stat-sub" id="s-committed-sub">0 positions × strike × 100 × qty</div>
+            <div class="stat-sub" id="s-committed-sub">0 open option chains</div>
           </div>
         </div>
       </div>
       <div class="trades-wrap">
-        <div id="backup-reminder"></div>
         <div class="sec-hdr">
           <span class="sec-title">Active Positions</span>
           <span class="sec-count" id="active-count">0</span>
@@ -2077,6 +2062,6 @@
 </div>
 
 <script src="./auto-backup.js"></script>
-<script src="./app.js?v=20261127-files-backup"></script>
+<script src="./app.js?v=20261128-summary-cleanup"></script>
 </body>
 </html>

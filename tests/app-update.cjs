@@ -3,6 +3,9 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 const handlers = {}, requests = [], writes = [], messages = [];
+const html = fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
+const appAsset = html.match(/<script src="(\.\/app\.js\?v=[^"]+)"/)?.[1];
+assert.ok(appAsset, 'HTML must version its app script');
 let releaseWrites;
 const writeGate = new Promise(resolve => { releaseWrites = resolve; });
 let fail = false;
@@ -19,7 +22,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../service-worker.js'),'utf
   assert.equal(messages.length,0,'Do not reload before writes finish');
   assert.ok(requests.length > 0);
   assert.ok(requests.every(r=>r.options.cache === 'reload'));
-  assert.ok(requests.some(r=>r.url.endsWith('app.js?v=20261123-box-history')));
+  assert.ok(requests.some(r=>r.url.endsWith(appAsset.slice(2))));
   releaseWrites(); await pending;
   assert.equal(writes.length,requests.length);
   assert.deepEqual(messages,['READY_TO_RELOAD']);
@@ -32,7 +35,5 @@ vm.runInContext(fs.readFileSync(path.join(__dirname,'../service-worker.js'),'utf
   handlers.fetch({request:{method:'GET',url:'https://example.com/option/app.js'},respondWith:p=>{pending=p;}});
   await pending;
   assert.equal(requests.at(-1).options.cache,'no-cache');
-  const html=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
-  assert.ok(html.includes('src="./app.js?v=20261123-box-history"'));
   console.log('PASS: app updates bypass HTTP cache, await cache writes, preserve shell on download failure, and version scripts.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

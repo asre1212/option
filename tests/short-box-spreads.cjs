@@ -39,7 +39,7 @@ const server = http.createServer((req,res) => {
     assert.match(await page.textContent('#box-yearly'),/2027/);
     const yearlySummary = page.locator('#box-yearly-summary');
     assert.equal(await yearlySummary.count(), 1);
-    assert.match(await yearlySummary.locator('tr', {hasText:'2027'}).innerText(), /Financed \$10,000\.00\s+Total due \$10,500\.00/);
+    assert.match(await yearlySummary.locator('#box-yearly tr', {hasText:'2027'}).innerText(), /Financed\s+\$10,000\.00\s+Total due\s+\$10,500\.00/);
     const history = yearlySummary.locator('.box-financing-history');
     assert.equal(await history.evaluate(el=>el.open), false);
     await history.locator(':scope > summary').click();
@@ -78,7 +78,7 @@ const server = http.createServer((req,res) => {
     assert.match(await page.textContent('#box-analysis'),/Needs year-end values/);
     await page.evaluate(()=>{document.getElementById('tab-analysis').classList.add('active');document.querySelector('#box-analysis details').open=true;});
     await page.locator('[data-box-mark]').fill('10100');
-    await page.locator('[data-box-mark]').dispatchEvent('change');
+    await page.locator('[data-box-mark]').press('Tab');
     assert.match(await page.textContent('#box-analysis'),/\$100.00/);
     assert.match(await page.textContent('#box-analysis'),/\$400.00/);
     assert.equal(await page.evaluate(()=>loadBoxSpreads()[0].yearEndValues[2026]),10100);
