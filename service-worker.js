@@ -2,13 +2,12 @@
    Options Tracker — Service Worker
    Same-origin app shell: network-first with cache fallback,
    cleared by the "Update App" button.
-   Allowlisted third-party assets (webfont, lazy-loaded libraries):
-   cache-first in a separate runtime cache, so the app keeps its
-   typography — and Excel export / OCR keep working — with no
+   Both font faces are bundled in the app shell. Third-party libraries:
+   cache-first in a separate runtime cache so Excel export / OCR keep working with no
    connection, once each has been fetched successfully one time.
 ───────────────────────────────────────── */
 
-const CACHE_VERSION  = 'options-tracker-v21';
+const CACHE_VERSION  = 'options-tracker-v22';
 const RUNTIME_CACHE  = 'options-tracker-runtime-v1';
 const CACHE_ASSETS   = [
   './',
@@ -17,7 +16,9 @@ const CACHE_ASSETS   = [
   './auto-backup.js',
   './options-tracker.html',
   './manifest.json',
-  './icon.svg'
+  './icon.svg',
+  './fonts/Manrope.woff2',
+  './fonts/GeistMono.woff2'
 ];
 
 // Cross-origin hosts whose responses may be kept for offline use. Every URL
@@ -26,8 +27,6 @@ const CACHE_ASSETS   = [
 // watchlist quote feeds included, since a cached price is a wrong price. The
 // app keeps its own copy of the last quotes in localStorage instead.
 const RUNTIME_HOSTS = [
-  'fonts.googleapis.com',    // webfont stylesheet
-  'fonts.gstatic.com',       // webfont files
   'cdnjs.cloudflare.com',    // SheetJS (Excel export)
   'cdn.jsdelivr.net'         // Tesseract.js (OCR engine + language data)
 ];

@@ -11,11 +11,19 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Options">
   <title>Options Tracker</title>
-  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    // Apply a stored preference before the first paint. Missing/blocked storage uses Manrope.
+    try {
+      if (localStorage.getItem('opts_font') === 'geist-mono') document.documentElement.dataset.font = 'geist-mono';
+    } catch {}
+  </script>
   <style>
+    @font-face{font-family:Manrope;src:url('./fonts/Manrope.woff2') format('woff2');font-weight:200 800;font-style:normal;font-display:swap}
+    @font-face{font-family:'Geist Mono';src:url('./fonts/GeistMono.woff2') format('woff2');font-weight:200 800;font-style:normal;font-display:swap}
     [hidden]{display:none!important}
     *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     :root{
+      --app-font:Manrope,system-ui,-apple-system,sans-serif;
       --bg:#f5f5f0;--surface:#fafaf7;--card:#ffffff;--card2:#ffffff;
       --border:#e0dfd8;--border2:#d4d3cc;
       --text:#111110;--text2:#6b6b66;--text3:#aaa9a3;
@@ -26,7 +34,8 @@
       --safe-top:env(safe-area-inset-top);
       --safe-bottom:env(safe-area-inset-bottom);
     }
-    html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Geist Mono','ui-monospace','SFMono-Regular',monospace;overflow:hidden}
+    :root[data-font="geist-mono"]{--app-font:'Geist Mono',ui-monospace,'SFMono-Regular',monospace}
+    html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--app-font);font-variant-numeric:tabular-nums;overflow:hidden}
     #app{display:flex;flex-direction:column;height:100vh;height:100dvh}
     .safe-top{height:var(--safe-top);background:var(--bg);min-height:8px}
     #content{flex:1;overflow:hidden;position:relative}
@@ -63,6 +72,27 @@
       display:flex;justify-content:space-between;align-items:center;
       margin-bottom:10px;
     }
+    .stats-bar-hdr{gap:8px}
+    .stats-bar-actions{display:flex;align-items:center;gap:6px}
+    .stats-bar-actions .refresh-btn{white-space:nowrap}
+    .settings-toggle{min-width:44px;min-height:44px;padding:0;display:grid;place-items:center;border:1px solid var(--border);border-radius:50%;background:var(--card);color:var(--text2);cursor:pointer}
+    .settings-toggle svg{width:17px;height:17px}
+    .settings-toggle:focus-visible,.settings-card :is(button,select):focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+    .settings-card{margin:auto;width:min(350px,calc(100% - 32px));max-height:calc(100% - 32px);padding:20px;border:1px solid var(--border2);border-radius:16px;background:var(--card);color:var(--text);font:inherit}
+    .settings-card::backdrop{background:#23252160}
+    .settings-card h2{font-size:20px;margin-bottom:16px}
+    .settings-card label{display:block;font-size:13px;font-weight:650;margin-bottom:6px}
+    .settings-card select,.settings-card button{min-height:44px;font:inherit;border:1px solid var(--border2);border-radius:8px;color:var(--text);background:var(--surface);padding:7px 12px}
+    .settings-card select{width:100%;font-size:16px}
+    .settings-card p{margin:8px 0 16px;font-size:12px;color:var(--text2)}
+    .settings-card form{display:flex;justify-content:flex-end}
+    .settings-card button{cursor:pointer;font-size:13px;font-weight:650;color:var(--blue)}
+    :root:not([data-font="geist-mono"]) :is(.stat-label,.stat-sub,.sec-title,.nav-item){color:var(--text2)}
+    :root:not([data-font="geist-mono"]) .nav-item.active{color:var(--blue)}
+    :root:not([data-font="geist-mono"]) .stat-value{font-weight:700}
+    .stats-grid>.stat-card{min-width:0}
+    .stats-grid .stat-value{overflow-wrap:anywhere}
+    @media(max-width:360px){.stats-grid .stat-value{font-size:18px}}
     .stats-bar-label{font-size:9px;color:var(--text3);letter-spacing:.12em;text-transform:uppercase}
     .offline-pill{
       display:none;margin-left:6px;padding:2px 7px;border-radius:20px;
@@ -1045,10 +1075,18 @@
             Options Tracker
             <span class="offline-pill" id="offline-pill" title="No connection — your trades are stored on this device and keep working">Offline</span>
           </div>
-          <button class="refresh-btn" id="refresh-btn" onclick="hardRefresh()">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            Update App
-          </button>
+          <div class="stats-bar-actions">
+            <button class="refresh-btn" id="refresh-btn" onclick="hardRefresh()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              Update App
+            </button>
+            <button type="button" class="settings-toggle" id="app-settings-toggle" aria-label="Settings" aria-haspopup="dialog" aria-controls="app-settings" title="Settings">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                <path d="M4 7h16M4 12h16M4 17h16"/>
+                <circle cx="9" cy="7" r="2" fill="white"/><circle cx="15" cy="12" r="2" fill="white"/><circle cx="9" cy="17" r="2" fill="white"/>
+              </svg>
+            </button>
+          </div>
         </div>
         <div class="stats-grid">
           <div class="stat-card">
@@ -2061,6 +2099,36 @@
   <button class="toast-btn" id="toast-btn" onclick="toastAction()">Undo</button>
 </div>
 
+<dialog class="settings-card" id="app-settings" aria-labelledby="app-settings-title">
+  <h2 id="app-settings-title">Settings</h2>
+  <label for="app-font">Font</label>
+  <select id="app-font" aria-describedby="app-font-help">
+    <option value="manrope">Manrope (default)</option>
+    <option value="geist-mono">Geist Mono (classic)</option>
+  </select>
+  <p id="app-font-help">Changes apply immediately and are saved on this device.</p>
+  <form method="dialog"><button>Done</button></form>
+</dialog>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const dialog = document.getElementById('app-settings');
+    const toggle = document.getElementById('app-settings-toggle');
+    const font = document.getElementById('app-font');
+    const selected = () => root.dataset.font === 'geist-mono' ? 'geist-mono' : 'manrope';
+    toggle.addEventListener('click', () => {
+      font.value = selected();
+      dialog.showModal();
+      font.focus();
+    });
+    font.addEventListener('change', () => {
+      if (font.value === 'geist-mono') root.dataset.font = 'geist-mono';
+      else delete root.dataset.font;
+      try { localStorage.setItem('opts_font', selected()); } catch {}
+    });
+    dialog.addEventListener('close', () => toggle.focus());
+  })();
+</script>
 <script src="./auto-backup.js"></script>
 <script src="./app.js?v=20261128-summary-cleanup"></script>
 </body>

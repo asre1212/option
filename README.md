@@ -66,6 +66,12 @@ in your browser's localStorage; nothing is sent to a server.
   expiring, raised when you open or return to the app. The same permission carries the
   watchlist's target-yield alert.
 
+## Appearance
+
+On Portfolio, open **Settings → Font** to choose **Manrope** (default) or
+**Geist Mono** (classic). The choice applies immediately and is remembered on
+that device. Both fonts are bundled for offline use; the licenses are in `fonts/`.
+
 ## Short box spreads
 
 Use **+ → Box Spread** to enter ticker (defaults to `$SPX`), total credit
